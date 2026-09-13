@@ -1,4 +1,4 @@
-# 🌊 edge-sensing-node
+# edge-sensing-node
 
 **STM32-based water quality edge sensor node** — part of the [WQM-Project](https://github.com/WQM-Project) ecosystem.
 

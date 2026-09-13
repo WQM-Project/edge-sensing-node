@@ -13,8 +13,8 @@ This repo contains the firmware for the **edge sensing node**: a NUCLEO-F722ZE b
 ## System Position
 
 ```
-┌─────────────────────┐       LoRa 868 MHz       ┌───────────────┐       4G LTE       ┌──────────────┐
-│  edge-sensing-node  │ ─────────────────────────▶│    gateway    │ ──────────────────▶│  Firebase /  │
+┌─────────────────────┐       LoRa 868 MHz        ┌───────────────┐       4G LTE      ┌──────────────┐
+│  edge-sensing-node  │────────────────────────▶ │    gateway     │ ─────────────────▶│  Firebase /  │
 │  (this repo)        │   JSON over UART→SX1278   │  (ESP8266 +   │   HTTPS + JSON    │  Cloud + ML  │
 │  STM32F722ZE        │                           │   SIM7600E)   │                   │  Dashboard   │
 └─────────────────────┘                           └───────────────┘                   └──────────────┘

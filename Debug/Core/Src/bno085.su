@@ -1,0 +1,7 @@
+../Core/Src/bno085.c:94:26:shtp_send	40	static
+../Core/Src/bno085.c:124:16:shtp_receive	32	static
+../Core/Src/bno085.c:166:13:shtp_set_feature	48	static
+../Core/Src/bno085.c:198:13:quat_to_euler	64	static
+../Core/Src/bno085.c:230:6:BNO085_Reset	24	static
+../Core/Src/bno085.c:241:9:BNO085_Init	48	static
+../Core/Src/bno085.c:300:9:BNO085_Read	56	static

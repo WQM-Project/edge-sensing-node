@@ -21,9 +21,12 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "bno085.h"
+#include "gps.h"
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -44,6 +47,18 @@ typedef struct {
   float air_temp;     /* BME280            */
   float humidity;     /* BME280            */
   float pressure_hpa; /* BME280            */
+
+  /* ── Navigation / localisation (BNO085 + GPS) ──────────────────────── */
+  float latitude;     /* GPS decimal degrees, north +     */
+  float longitude;    /* GPS decimal degrees, east +      */
+  float altitude_m;   /* GPS altitude above MSL (m)       */
+  float speed_knots;  /* GPS speed over ground (knots)    */
+  float course_deg;   /* GPS course over ground (degrees) */
+  uint8_t gps_fix;    /* 0 = no fix, 1 = GPS, 2 = DGPS   */
+  uint8_t satellites; /* Satellites in use                 */
+  float heading;      /* BNO085 yaw / heading (degrees)   */
+  float pitch;        /* BNO085 pitch (degrees)           */
+  float roll;         /* BNO085 roll  (degrees)           */
 } WQM_SensorData_t;
 
 /* ── BME280 calibration data (from chip NVM) ────────────────────────────────
@@ -157,7 +172,11 @@ typedef struct {
 
 /* ── JSON buffer ────────────────────────────────────────────────────────────
  */
-#define JSON_BUF_SIZE 512
+#define JSON_BUF_SIZE 768 /* Increased for nav/GPS fields */
+
+/* ── BNO085 IMU ─────────────────────────────────────────────────────────────
+ */
+#define BNO085_REPORT_INTERVAL_MS 100 /* 10 Hz orientation updates      */
 
 /* ── Sampling interval ──────────────────────────────────────────────────────
  */
@@ -183,6 +202,7 @@ I2C_HandleTypeDef hi2c1;
 
 TIM_HandleTypeDef htim6;
 
+UART_HandleTypeDef huart4;
 UART_HandleTypeDef huart3;
 
 PCD_HandleTypeDef hpcd_USB_OTG_FS;
@@ -194,6 +214,12 @@ static int32_t bme280_t_fine; /* Shared between T/P/H comp  */
 static WQM_SensorData_t sensor_data;
 static char json_buf[JSON_BUF_SIZE];
 static uint32_t sample_counter = 0;
+
+/* BNO085 orientation data */
+static BNO085_Orientation_t imu_orient;
+
+/* GPS parsed data */
+static GPS_Data_t gps_data;
 
 /* DS18B20 ROM addresses — filled at boot by search */
 static uint8_t ds18b20_rom[2][8]; /* ROM codes for up to 2 sensors       */
@@ -217,6 +243,7 @@ static void MX_USB_OTG_FS_PCD_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_TIM6_Init(void);
+static void MX_UART4_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* ── Microsecond delay ──────────────────────────────────────────────────────
@@ -873,28 +900,40 @@ static float Sensor_ReadORP(void) {
  */
 static uint16_t WQM_BuildJSON(const WQM_SensorData_t *data, char *buf,
                               uint16_t buf_size) {
-  int len = snprintf(buf, buf_size,
-                     "{"
-                     "\"id\":\"%s\","
-                     "\"ts\":%lu,"
-                     "\"pH\":%.2f,"
-                     "\"turb_ntu\":%.1f,"
-                     "\"tds_ppm\":%.1f,"
-                     "\"do_mgl\":%.2f,"
-                     "\"ec_uscm\":%.1f,"
-                     "\"orp_mv\":%.1f,"
-                     "\"temp_w1\":%.2f,"
-                     "\"temp_w2\":%.2f,"
-                     "\"depth_cm\":%.1f,"
-                     "\"temp_air\":%.2f,"
-                     "\"humidity\":%.1f,"
-                     "\"pressure_hpa\":%.2f"
-                     "}\r\n",
-                     DEVICE_ID, (unsigned long)HAL_GetTick(), data->ph,
-                     data->turbidity_ntu, data->tds_ppm, data->do_mgl,
-                     data->ec_uscm, data->orp_mv, data->water_temp_1,
-                     data->water_temp_2, data->depth_cm, data->air_temp,
-                     data->humidity, data->pressure_hpa);
+  int len = snprintf(
+      buf, buf_size,
+      "{"
+      "\"id\":\"%s\","
+      "\"ts\":%lu,"
+      "\"pH\":%.2f,"
+      "\"turb_ntu\":%.1f,"
+      "\"tds_ppm\":%.1f,"
+      "\"do_mgl\":%.2f,"
+      "\"ec_uscm\":%.1f,"
+      "\"orp_mv\":%.1f,"
+      "\"temp_w1\":%.2f,"
+      "\"temp_w2\":%.2f,"
+      "\"depth_cm\":%.1f,"
+      "\"temp_air\":%.2f,"
+      "\"humidity\":%.1f,"
+      "\"pressure_hpa\":%.2f,"
+      "\"lat\":%.6f,"
+      "\"lon\":%.6f,"
+      "\"alt_m\":%.1f,"
+      "\"sog_knots\":%.1f,"
+      "\"cog_deg\":%.1f,"
+      "\"gps_fix\":%u,"
+      "\"sats\":%u,"
+      "\"heading\":%.1f,"
+      "\"pitch\":%.1f,"
+      "\"roll\":%.1f"
+      "}\r\n",
+      DEVICE_ID, (unsigned long)HAL_GetTick(), data->ph, data->turbidity_ntu,
+      data->tds_ppm, data->do_mgl, data->ec_uscm, data->orp_mv,
+      data->water_temp_1, data->water_temp_2, data->depth_cm, data->air_temp,
+      data->humidity, data->pressure_hpa, data->latitude, data->longitude,
+      data->altitude_m, data->speed_knots, data->course_deg, data->gps_fix,
+      data->satellites, data->heading, data->pitch, data->roll);
 
   return (uint16_t)((len > 0) ? len : 0);
 }
@@ -916,10 +955,11 @@ static void Debug_Print(const char *str) {
 /* USER CODE END 0 */
 
 /**
- * @brief  The application entry point.
- * @retval int
- */
-int main(void) {
+  * @brief  The application entry point.
+  * @retval int
+  */
+int main(void)
+{
 
   /* USER CODE BEGIN 1 */
 
@@ -930,8 +970,7 @@ int main(void) {
 
   /* MCU Configuration--------------------------------------------------------*/
 
-  /* Reset of all peripherals, Initializes the Flash interface and the Systick.
-   */
+  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
   HAL_Init();
 
   /* USER CODE BEGIN Init */
@@ -952,6 +991,7 @@ int main(void) {
   MX_ADC1_Init();
   MX_I2C1_Init();
   MX_TIM6_Init();
+  MX_UART4_Init();
   /* USER CODE BEGIN 2 */
 
   /* ── Boot message ─────────────────────────────────────────────────────────
@@ -979,6 +1019,23 @@ int main(void) {
   }
 
   Debug_Print("[OK]  All peripherals initialized.\r\n");
+
+  /* ── Initialize GPS ───────────────────────────────────────────────────────
+   */
+  if (GPS_Init(&huart4) == 0) {
+    Debug_Print("[OK]  GPS UART initialized.\r\n");
+  } else {
+    Debug_Print("[ERR] GPS UART failed to initialize!\r\n");
+  }
+
+  /* ── Initialize BNO085 ────────────────────────────────────────────────────
+   */
+  if (BNO085_Init(&hi2c1, BNO085_REPORT_INTERVAL_MS) == 0) {
+    Debug_Print("[OK]  BNO085 initialized.\r\n");
+  } else {
+    Debug_Print("[ERR] BNO085 failed to initialize! Check I2C wiring.\r\n");
+  }
+
   Debug_Print("========================================\r\n\r\n");
 
   HAL_Delay(1000); /* Let sensors stabilize */
@@ -1035,6 +1092,25 @@ int main(void) {
      */
     sensor_data.depth_cm = DepthSensor_ReadDistance();
 
+    /* ── Step 8: Read IMU (BNO085) ───────────────────────────────────────── */
+    BNO085_Read(&hi2c1, &imu_orient);
+    if (imu_orient.valid) {
+      sensor_data.heading = imu_orient.yaw;
+      sensor_data.pitch = imu_orient.pitch;
+      sensor_data.roll = imu_orient.roll;
+    }
+
+    /* ── Step 9: Copy latest GPS data ───────────────────────────────────────
+     */
+    GPS_GetData(&gps_data);
+    sensor_data.latitude = gps_data.latitude;
+    sensor_data.longitude = gps_data.longitude;
+    sensor_data.altitude_m = gps_data.altitude_m;
+    sensor_data.speed_knots = gps_data.speed_knots;
+    sensor_data.course_deg = gps_data.course_deg;
+    sensor_data.gps_fix = gps_data.fix_quality;
+    sensor_data.satellites = gps_data.satellites;
+
     /* ═══════════════════════════════════════════════════════════════════════
      */
     /*  BUILD JSON PACKET & TRANSMIT VIA USART3 (debug; LoRa later)         */
@@ -1060,25 +1136,26 @@ int main(void) {
 }
 
 /**
- * @brief System Clock Configuration
- * @retval None
- */
-void SystemClock_Config(void) {
+  * @brief System Clock Configuration
+  * @retval None
+  */
+void SystemClock_Config(void)
+{
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
 
   /** Configure LSE Drive Capability
-   */
+  */
   HAL_PWR_EnableBkUpAccess();
 
   /** Configure the main internal regulator output voltage
-   */
+  */
   __HAL_RCC_PWR_CLK_ENABLE();
   __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
 
   /** Initializes the RCC Oscillators according to the specified parameters
-   * in the RCC_OscInitTypeDef structure.
-   */
+  * in the RCC_OscInitTypeDef structure.
+  */
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
   RCC_OscInitStruct.HSEState = RCC_HSE_BYPASS;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
@@ -1087,36 +1164,40 @@ void SystemClock_Config(void) {
   RCC_OscInitStruct.PLL.PLLN = 216;
   RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
   RCC_OscInitStruct.PLL.PLLQ = 9;
-  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) {
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+  {
     Error_Handler();
   }
 
   /** Activate the Over-Drive mode
-   */
-  if (HAL_PWREx_EnableOverDrive() != HAL_OK) {
+  */
+  if (HAL_PWREx_EnableOverDrive() != HAL_OK)
+  {
     Error_Handler();
   }
 
   /** Initializes the CPU, AHB and APB buses clocks
-   */
-  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK |
-                                RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
+  */
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
+                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV4;
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV2;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_7) != HAL_OK) {
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_7) != HAL_OK)
+  {
     Error_Handler();
   }
 }
 
 /**
- * @brief ADC1 Initialization Function
- * @param None
- * @retval None
- */
-static void MX_ADC1_Init(void) {
+  * @brief ADC1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_ADC1_Init(void)
+{
 
   /* USER CODE BEGIN ADC1_Init 0 */
 
@@ -1128,9 +1209,8 @@ static void MX_ADC1_Init(void) {
 
   /* USER CODE END ADC1_Init 1 */
 
-  /** Configure the global features of the ADC (Clock, Resolution, Data
-   * Alignment and number of conversion)
-   */
+  /** Configure the global features of the ADC (Clock, Resolution, Data Alignment and number of conversion)
+  */
   hadc1.Instance = ADC1;
   hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
   hadc1.Init.Resolution = ADC_RESOLUTION_12B;
@@ -1143,30 +1223,33 @@ static void MX_ADC1_Init(void) {
   hadc1.Init.NbrOfConversion = 1;
   hadc1.Init.DMAContinuousRequests = DISABLE;
   hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
-  if (HAL_ADC_Init(&hadc1) != HAL_OK) {
+  if (HAL_ADC_Init(&hadc1) != HAL_OK)
+  {
     Error_Handler();
   }
 
-  /** Configure for the selected ADC regular channel its corresponding rank in
-   * the sequencer and its sample time.
-   */
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
   sConfig.Channel = ADC_CHANNEL_3;
   sConfig.Rank = ADC_REGULAR_RANK_1;
   sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
-  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK) {
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
     Error_Handler();
   }
   /* USER CODE BEGIN ADC1_Init 2 */
 
   /* USER CODE END ADC1_Init 2 */
+
 }
 
 /**
- * @brief I2C1 Initialization Function
- * @param None
- * @retval None
- */
-static void MX_I2C1_Init(void) {
+  * @brief I2C1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_I2C1_Init(void)
+{
 
   /* USER CODE BEGIN I2C1_Init 0 */
 
@@ -1184,32 +1267,37 @@ static void MX_I2C1_Init(void) {
   hi2c1.Init.OwnAddress2Masks = I2C_OA2_NOMASK;
   hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
   hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
-  if (HAL_I2C_Init(&hi2c1) != HAL_OK) {
+  if (HAL_I2C_Init(&hi2c1) != HAL_OK)
+  {
     Error_Handler();
   }
 
   /** Configure Analogue filter
-   */
-  if (HAL_I2CEx_ConfigAnalogFilter(&hi2c1, I2C_ANALOGFILTER_ENABLE) != HAL_OK) {
+  */
+  if (HAL_I2CEx_ConfigAnalogFilter(&hi2c1, I2C_ANALOGFILTER_ENABLE) != HAL_OK)
+  {
     Error_Handler();
   }
 
   /** Configure Digital filter
-   */
-  if (HAL_I2CEx_ConfigDigitalFilter(&hi2c1, 0) != HAL_OK) {
+  */
+  if (HAL_I2CEx_ConfigDigitalFilter(&hi2c1, 0) != HAL_OK)
+  {
     Error_Handler();
   }
   /* USER CODE BEGIN I2C1_Init 2 */
 
   /* USER CODE END I2C1_Init 2 */
+
 }
 
 /**
- * @brief TIM6 Initialization Function
- * @param None
- * @retval None
- */
-static void MX_TIM6_Init(void) {
+  * @brief TIM6 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM6_Init(void)
+{
 
   /* USER CODE BEGIN TIM6_Init 0 */
 
@@ -1221,29 +1309,100 @@ static void MX_TIM6_Init(void) {
 
   /* USER CODE END TIM6_Init 1 */
   htim6.Instance = TIM6;
-  htim6.Init.Prescaler = 107; /* 108 MHz / (107+1) = 1 MHz → 1 µs tick */
+  htim6.Init.Prescaler = 0;
   htim6.Init.CounterMode = TIM_COUNTERMODE_UP;
   htim6.Init.Period = 65535;
   htim6.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-  if (HAL_TIM_Base_Init(&htim6) != HAL_OK) {
+  if (HAL_TIM_Base_Init(&htim6) != HAL_OK)
+  {
     Error_Handler();
   }
   sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
   sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
-  if (HAL_TIMEx_MasterConfigSynchronization(&htim6, &sMasterConfig) != HAL_OK) {
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim6, &sMasterConfig) != HAL_OK)
+  {
     Error_Handler();
   }
   /* USER CODE BEGIN TIM6_Init 2 */
   HAL_TIM_Base_Start(&htim6); /* Start free-running counter for delay_us() */
   /* USER CODE END TIM6_Init 2 */
+
 }
 
 /**
- * @brief USART3 Initialization Function
+  * @brief UART4 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_UART4_Init(void)
+{
+
+  /* USER CODE BEGIN UART4_Init 0 */
+
+  /* USER CODE END UART4_Init 0 */
+
+  /* USER CODE BEGIN UART4_Init 1 */
+
+  /* USER CODE END UART4_Init 1 */
+  huart4.Instance = UART4;
+  huart4.Init.BaudRate = 96000;
+  huart4.Init.WordLength = UART_WORDLENGTH_8B;
+  huart4.Init.StopBits = UART_STOPBITS_1;
+  huart4.Init.Parity = UART_PARITY_NONE;
+  huart4.Init.Mode = UART_MODE_TX_RX;
+  huart4.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart4.Init.OverSampling = UART_OVERSAMPLING_16;
+  huart4.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
+  huart4.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
+  if (HAL_UART_Init(&huart4) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN UART4_Init 2 */
+
+  /* USER CODE END UART4_Init 2 */
+
+}
+
+/**
+ * @brief UART4 Initialization Function
  * @param None
  * @retval None
  */
-static void MX_USART3_UART_Init(void) {
+static void MX_UART4_Init(void) {
+
+  /* USER CODE BEGIN UART4_Init 0 */
+
+  /* USER CODE END UART4_Init 0 */
+
+  /* USER CODE BEGIN UART4_Init 1 */
+
+  /* USER CODE END UART4_Init 1 */
+  huart4.Instance = UART4;
+  huart4.Init.BaudRate = 96000;
+  huart4.Init.WordLength = UART_WORDLENGTH_8B;
+  huart4.Init.StopBits = UART_STOPBITS_1;
+  huart4.Init.Parity = UART_PARITY_NONE;
+  huart4.Init.Mode = UART_MODE_TX_RX;
+  huart4.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart4.Init.OverSampling = UART_OVERSAMPLING_16;
+  huart4.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
+  huart4.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
+  if (HAL_UART_Init(&huart4) != HAL_OK) {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN UART4_Init 2 */
+
+  /* USER CODE END UART4_Init 2 */
+}
+
+/**
+  * @brief USART3 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART3_UART_Init(void)
+{
 
   /* USER CODE BEGIN USART3_Init 0 */
 
@@ -1262,20 +1421,23 @@ static void MX_USART3_UART_Init(void) {
   huart3.Init.OverSampling = UART_OVERSAMPLING_16;
   huart3.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
   huart3.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
-  if (HAL_UART_Init(&huart3) != HAL_OK) {
+  if (HAL_UART_Init(&huart3) != HAL_OK)
+  {
     Error_Handler();
   }
   /* USER CODE BEGIN USART3_Init 2 */
 
   /* USER CODE END USART3_Init 2 */
+
 }
 
 /**
- * @brief USB_OTG_FS Initialization Function
- * @param None
- * @retval None
- */
-static void MX_USB_OTG_FS_PCD_Init(void) {
+  * @brief USB_OTG_FS Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USB_OTG_FS_PCD_Init(void)
+{
 
   /* USER CODE BEGIN USB_OTG_FS_Init 0 */
 
@@ -1295,20 +1457,23 @@ static void MX_USB_OTG_FS_PCD_Init(void) {
   hpcd_USB_OTG_FS.Init.battery_charging_enable = ENABLE;
   hpcd_USB_OTG_FS.Init.vbus_sensing_enable = ENABLE;
   hpcd_USB_OTG_FS.Init.use_dedicated_ep1 = DISABLE;
-  if (HAL_PCD_Init(&hpcd_USB_OTG_FS) != HAL_OK) {
+  if (HAL_PCD_Init(&hpcd_USB_OTG_FS) != HAL_OK)
+  {
     Error_Handler();
   }
   /* USER CODE BEGIN USB_OTG_FS_Init 2 */
 
   /* USER CODE END USB_OTG_FS_Init 2 */
+
 }
 
 /**
- * @brief GPIO Initialization Function
- * @param None
- * @retval None
- */
-static void MX_GPIO_Init(void) {
+  * @brief GPIO Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_GPIO_Init(void)
+{
   GPIO_InitTypeDef GPIO_InitStruct = {0};
   /* USER CODE BEGIN MX_GPIO_Init_1 */
 
@@ -1324,12 +1489,20 @@ static void MX_GPIO_Init(void) {
   __HAL_RCC_GPIOG_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, LD1_Pin | LD3_Pin | LD2_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, LD1_Pin|LD3_Pin|LD2_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(USB_PowerSwitchOn_GPIO_Port, USB_PowerSwitchOn_Pin,
-                    GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(USB_PowerSwitchOn_GPIO_Port, USB_PowerSwitchOn_Pin, GPIO_PIN_RESET);
 
+  /*Configure GPIO pin : PE4 */
+  GPIO_InitStruct.Pin = GPIO_PIN_4;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : PE5 PE6 */
+  GPIO_InitStruct.Pin = GPIO_PIN_5|GPIO_PIN_6;
   /*Configure GPIO pin : PE6 */
   GPIO_InitStruct.Pin = GPIO_PIN_6;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
@@ -1343,7 +1516,7 @@ static void MX_GPIO_Init(void) {
   HAL_GPIO_Init(USER_Btn_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pins : LD1_Pin LD3_Pin LD2_Pin */
-  GPIO_InitStruct.Pin = LD1_Pin | LD3_Pin | LD2_Pin;
+  GPIO_InitStruct.Pin = LD1_Pin|LD3_Pin|LD2_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -1369,18 +1542,29 @@ static void MX_GPIO_Init(void) {
 
 /* USER CODE BEGIN 4 */
 
+/**
+ * @brief UART RX Complete Callback for GPS
+ */
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
+  if (huart->Instance == UART4) {
+    extern void GPS_UART_IRQCallback(void);
+    GPS_UART_IRQCallback();
+  }
+}
+
 /* USER CODE END 4 */
 
-/* MPU Configuration */
+ /* MPU Configuration */
 
-void MPU_Config(void) {
+void MPU_Config(void)
+{
   MPU_Region_InitTypeDef MPU_InitStruct = {0};
 
   /* Disables the MPU */
   HAL_MPU_Disable();
 
   /** Initializes and configures the Region and the memory to be protected
-   */
+  */
   MPU_InitStruct.Enable = MPU_REGION_ENABLE;
   MPU_InitStruct.Number = MPU_REGION_NUMBER0;
   MPU_InitStruct.BaseAddress = 0x0;
@@ -1396,13 +1580,15 @@ void MPU_Config(void) {
   HAL_MPU_ConfigRegion(&MPU_InitStruct);
   /* Enables the MPU */
   HAL_MPU_Enable(MPU_PRIVILEGED_DEFAULT);
+
 }
 
 /**
- * @brief  This function is executed in case of error occurrence.
- * @retval None
- */
-void Error_Handler(void) {
+  * @brief  This function is executed in case of error occurrence.
+  * @retval None
+  */
+void Error_Handler(void)
+{
   /* USER CODE BEGIN Error_Handler_Debug */
   /* User can add his own implementation to report the HAL error return state */
   __disable_irq();
@@ -1412,13 +1598,14 @@ void Error_Handler(void) {
 }
 #ifdef USE_FULL_ASSERT
 /**
- * @brief  Reports the name of the source file and the source line number
- *         where the assert_param error has occurred.
- * @param  file: pointer to the source file name
- * @param  line: assert_param error line source number
- * @retval None
- */
-void assert_failed(uint8_t *file, uint32_t line) {
+  * @brief  Reports the name of the source file and the source line number
+  *         where the assert_param error has occurred.
+  * @param  file: pointer to the source file name
+  * @param  line: assert_param error line source number
+  * @retval None
+  */
+void assert_failed(uint8_t *file, uint32_t line)
+{
   /* USER CODE BEGIN 6 */
   /* User can add his own implementation to report the file name and line
      number, ex: printf("Wrong parameters value: file %s on line %d\r\n", file,

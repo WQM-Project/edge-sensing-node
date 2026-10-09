@@ -60,8 +60,8 @@ all: main-build
 main-build: WQM.elf secondary-outputs
 
 # Tool invocations
-WQM.elf WQM.map: $(OBJS) $(USER_OBJS) C:\Users\karti\Desktop\PROJECTS\WQM\STM32F722ZETX_FLASH.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
-	arm-none-eabi-gcc -o "WQM.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m7 -T"C:\Users\karti\Desktop\PROJECTS\WQM\STM32F722ZETX_FLASH.ld" --specs=nosys.specs -Wl,-Map="WQM.map" -Wl,--gc-sections -static --specs=nano.specs -mfpu=fpv5-sp-d16 -mfloat-abi=hard -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
+WQM.elf WQM.map: $(OBJS) $(USER_OBJS) C:\Users\karti\OneDrive\Desktop\PROJECTS\edge-sensing-node-temp\STM32F722ZETX_FLASH.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
+	arm-none-eabi-gcc -o "WQM.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m7 -T"C:\Users\karti\OneDrive\Desktop\PROJECTS\edge-sensing-node-temp\STM32F722ZETX_FLASH.ld" --specs=nosys.specs -Wl,-Map="WQM.map" -Wl,--gc-sections -static --specs=nano.specs -mfpu=fpv5-sp-d16 -mfloat-abi=hard -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
 	@echo 'Finished building target: $@'
 	@echo ' '
 

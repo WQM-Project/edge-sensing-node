@@ -48,13 +48,14 @@ This sensor communicates over the 1-Wire protocol.
 * **`OW_PORT (GPIOE)`** & **`OW_PIN (GPIO_PIN_6)`**: The hardware GPIO pin assigned to the 1-Wire data bus.
 * **Command Codes** (`0xCC`, `0x55`, `0xF0`, `0x44`, `0xBE`): Standard 1-Wire hex commands used by the driver to skip ROM addressing, search for devices, trigger temperature conversions, and read the internal scratchpad memory.
 
-## JSN-SR04T Ultrasonic Distance Sensor
+## IP68 Underwater Ultrasonic Obstacle Avoidance Sensor (6 m, UART)
 
-Used for measuring water level via time-of-flight acoustics.
+Used for measuring water level via ultrasonic ranging over UART frames.
 
-* **`TRIG_PORT` / `TRIG_PIN`** (`GPIOE`, `Pin 4`): The pin used to trigger the ultrasonic pulse.
-* **`ECHO_PORT` / `ECHO_PIN`** (`GPIOE`, `Pin 5`): The pin used to measure the length of the returning acoustic echo.
-* **`US_TIMEOUT (30000)`**: The maximum time (in microseconds) to wait for an echo before assuming out-of-range (~5 meters).
+* **`DEPTH_SENSOR_UART (&huart3)`**: UART instance used for depth sensor receive path.
+* **`DEPTH_UART_FRAME_HEADER (0xFFu)`** and **`DEPTH_UART_FRAME_LEN (4u)`**: Conservative framed payload parser assumptions used by the current firmware abstraction.
+* **`DEPTH_UART_TIMEOUT_MS (120u)`**: UART receive timeout for one depth frame.
+* **`DEPTH_SENSOR_MAX_CM (600.0f)`**: Maximum accepted measurement range (6 meters) before marking the sample invalid.
 
 ## BME280 Environmental Sensor
 

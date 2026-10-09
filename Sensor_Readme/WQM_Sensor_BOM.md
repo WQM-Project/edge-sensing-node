@@ -19,7 +19,7 @@
 | 5 | 1 | DFRobot SEN0237-A | Gravity: Analog Dissolved Oxygen Sensor Kit (galvanic) | Analog | 3,500–4,200 | 3,500–4,200 | Robu / MakerBazar |
 | 6 | 1 | DFRobot DFR0300 | Gravity: Analog Conductivity Sensor (K=1) | Analog | 1,200–1,800 | 1,200–1,800 | Robu / Robocraze |
 | 7 | 1 | DFRobot SEN0165 | Gravity: Analog ORP Sensor Meter (platinum electrode, BNC) | Analog | 9,400–10,800 | 9,400–10,800 | Robu / Element14 |
-| 8 | 1 | JSN-SR04T | Waterproof Ultrasonic Distance Sensor (20–600 cm) | Digital (Trig/Echo) | 250–400 | 250–400 | Robu / Amazon IN |
+| 8 | 1 | IP68 Underwater Ultrasonic Obstacle Avoidance Sensor | Waterproof Ultrasonic Distance Sensor (0–600 cm) | UART | 250–450 | 250–450 | Robu / Amazon IN |
 | 9 | 1 | GY-BME280 | BME280 Barometric Pressure + Humidity + Temperature Breakout | I2C | 250–400 | 250–400 | Robu / Robocraze |
 
 | | | | | | **Sensor Total** | **₹16,700–20,600** | |
@@ -50,7 +50,7 @@
 | P4 | 1 | pH bulb guard tube | PETG / PVC | 10–15 | Perforated tube recessing the glass bulb from lateral impact. |
 | P5 | 1 | Cable gland mounting plate | PETG | 15–25 | Sealed hull-entry plate with holes for 6–8 cable glands. |
 | P6 | 1 | BME280 + electronics mounting bracket | PLA | 5–10 | Internal hull bracket. No water contact — PLA acceptable. |
-| P7 | 1 | JSN-SR04T hull-bottom mount | PETG | 10–15 | Angled bracket, faces sensor downward, clear of prop wash. |
+| P7 | 1 | IP68 ultrasonic hull-bottom mount | PETG | 10–15 | Angled bracket, faces sensor downward, clear of prop wash. |
 
 | | | | **Est. Total Print Weight** | **145–225 g** | |
 
@@ -79,10 +79,9 @@
 | ADC Ch 4 | Conductivity (DFR0300) | 1 analog input |
 | ADC Ch 5 | ORP (SEN0165) | 1 analog input |
 | OneWire bus | DS18B20 × 2 (primary + backup) | 1 digital pin (shared bus) |
-| GPIO (Trig) | JSN-SR04T trigger | 1 digital output |
-| GPIO (Echo) | JSN-SR04T echo | 1 digital input |
+| UART RX | Depth sensor UART output | 1 UART RX pin |
 | I2C (SDA/SCL) | BME280 (addr 0x76 or 0x77) | 2 pins (shared bus) |
-| **Total** | **10 sensors** | **6 ADC + 4 digital + 2 I2C** |
+| **Total** | **10 sensors** | **6 ADC + 2 digital + 1 UART + 2 I2C** |
 
 > [!NOTE]
 > STM32F405 provides 16 ADC channels, 4 I2C buses, and 80+ GPIO — ample headroom for the full suite plus future expansion.
@@ -100,7 +99,7 @@
 | DO signal board | ~6 mA | 100% | 6 mA |
 | Conductivity board | ~5 mA | 100% | 5 mA |
 | ORP signal board | ~5 mA | 100% | 5 mA |
-| JSN-SR04T | ~30 mA | ~2% | 0.6 mA |
+| IP68 ultrasonic (UART) | ~30 mA | ~2% | 0.6 mA |
 | BME280 | ~0.3 mA | ~1% | ~0 mA |
 | **Total sensor draw** | | | **~28.25 mA** |
 
@@ -114,7 +113,7 @@
 ```
 HULL (top)
 ├── BME280 ..................... internal, away from motor heat
-├── JSN-SR04T ................. hull bottom, facing down
+├── IP68 ultrasonic ........... hull bottom, facing down
 │
 PROBE MAST (submerged, rigid PVC/3D-printed)
 ├── Conductivity (K=1) ........ upper mast (fast, least sensitive)
@@ -135,11 +134,11 @@ PROBE MAST (submerged, rigid PVC/3D-printed)
 
 | Category | Min (₹) | Max (₹) |
 | ---------- | --------- | --------- |
-| Sensor modules (×10) | 16,700 | 20,600 |
+| Sensor modules (×10) | 16,700 | 20,650 |
 | Calibration consumables (initial) | 1,100 | 1,850 |
 | 3D printing filament | 800 | 1,500 |
-| **Grand Total** | **₹18,600** | **₹23,950** |
-| **Remaining from ₹30K budget** | **₹6,050** | **₹11,400** |
+| **Grand Total** | **₹18,600** | **₹24,000** |
+| **Remaining from ₹30K budget** | **₹6,000** | **₹11,400** |
 
 > [!NOTE]
 > Remaining budget covers spare probes (DO membrane caps, pH replacement bulbs), additional calibration solutions for extended field campaigns, cable glands, waterproof connectors, and mounting hardware.
@@ -155,7 +154,7 @@ PROBE MAST (submerged, rigid PVC/3D-printed)
 - [ ] DO sensor kit (SEN0237-A) — verify NaOH fill solution is included or source locally
 - [ ] Conductivity sensor kit (DFR0300) + 1413 μS/cm calibration standard
 - [ ] ORP sensor kit (SEN0165) + cleaning solution
-- [ ] JSN-SR04T ultrasonic sensor
+- [ ] IP68 underwater ultrasonic obstacle avoidance sensor (6 m, UART)
 - [ ] BME280 breakout board
 - [ ] Spare DO membrane cap + electrolyte
 - [ ] PETG filament — 1 kg spool (for probe mast, shrouds, guard cages, mounts)

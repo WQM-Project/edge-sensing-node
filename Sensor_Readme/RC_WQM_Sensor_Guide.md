@@ -249,13 +249,13 @@
 
 ## 8. Depth/Flow Sensor (optional but recommended addition)
 
-**Recommended: JSN-SR04T Waterproof Ultrasonic Sensor**
+**Recommended: IP68 Underwater Ultrasonic Obstacle Avoidance Sensor (6 m, UART)**
 
 | Spec | Value |
 | --- | --- |
-| Range | 20cm–600cm |
-| Interface | Digital (trigger/echo, like standard ultrasonic) |
-| Cost | ₹250–400 |
+| Range | 0cm–600cm |
+| Interface | UART |
+| Cost | ₹250–450 |
 
 **Pros**
 
@@ -282,7 +282,7 @@
 Put the sensor ADC/MCU on a separate regulated rail from the ESC/drive motor, with a proper star-ground topology rather than daisy-chained grounds. Your analog sensors (pH, turbidity, TDS, DO, conductivity) are all low-signal and will pick up ESC switching noise if grounding is sloppy — this is a design decision to make before the hull is sealed up, since it's painful to retrofit afterward.
 
 **Probe mast — one shared mechanical structure:**
-Rather than mounting each sensor independently, build a single rigid mast/rack (PVC or 3D-printed) that hangs below the hull and carries all the wetted sensors (pH, turbidity, DO, conductivity, TDS, temperature) in fixed relative positions, with the ultrasonic sensor and GPS mounted separately on/above the hull. This is both cheaper (one mounting structure, not six) and mechanically stronger against snagging/impact than individual probes.
+Rather than mounting each sensor independently, build a single rigid mast/rack (PVC or 3D-printed) that hangs below the hull and carries all the wetted sensors (pH, turbidity, DO, conductivity, TDS, temperature) in fixed relative positions, with the UART ultrasonic sensor and GPS mounted separately on/above the hull. This is both cheaper (one mounting structure, not six) and mechanically stronger against snagging/impact than individual probes.
 
 **Stop-and-sample firmware sequencing (suggested order per stop):**
 
@@ -291,7 +291,7 @@ Rather than mounting each sensor independently, build a single rigid mast/rack (
 3. Wait remaining time for pH to stabilize (~30–60 sec total dwell)
 4. Read pH
 5. Read DO last (slowest sensor — by now it's had the most settling time)
-6. Log ultrasonic depth
+6. Log UART ultrasonic depth
 7. Package payload, resume navigation
 
 **Human intervention summary table:**
@@ -305,8 +305,8 @@ Rather than mounting each sensor independently, build a single rigid mast/rack (
 | DO | Every 2–3 weeks | Membrane/electrolyte replacement + calibration |
 | Conductivity | Monthly | Electrode cleaning + recalibration |
 | GPS | None | — |
-| Ultrasonic | None | — |
+| Ultrasonic (UART) | None | — |
 
 DO is your maintenance bottleneck — if you're ever deploying for an extended unattended period, that's the sensor that will fail first. For an RC-boat use case where a human is present at every deployment anyway (unlike the static buoy), this is much less of a concern than it would've been for the autonomous buoy version.
 
-**Approximate total sensing subsystem cost:** ₹8,000–10,500 (includes GPS and ultrasonic additions, keeps you well within the ₹50k overall project budget).
+**Approximate total sensing subsystem cost:** ₹8,000–10,550 (includes GPS and ultrasonic additions, keeps you well within the ₹50k overall project budget).

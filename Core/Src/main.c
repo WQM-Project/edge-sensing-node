@@ -40,7 +40,7 @@ typedef struct {
   float orp_mv;
   float water_temp_1; /* DS18B20 primary   */
   float water_temp_2; /* DS18B20 backup    */
-  float depth_cm;     /* JSN-SR04T         */
+  float depth_cm;     /* IP68 UART depth   */
   float air_temp;     /* BME280            */
   float humidity;     /* BME280            */
   float pressure_hpa; /* BME280            */
@@ -135,13 +135,13 @@ typedef struct {
 #define DS18B20_CMD_CONVERT 0x44
 #define DS18B20_CMD_READ_SCRATCH 0xBE
 
-/* ── JSN-SR04T ultrasonic ───────────────────────────────────────────────────
+/* ── IP68 underwater ultrasonic depth sensor (UART) ─────────────────────────
  */
-#define TRIG_PORT GPIOE
-#define TRIG_PIN GPIO_PIN_4
-#define ECHO_PORT GPIOE
-#define ECHO_PIN GPIO_PIN_5
-#define US_TIMEOUT 30000 /* Echo timeout in µs (~5m max)  */
+#define DEPTH_SENSOR_UART (&huart3)
+#define DEPTH_UART_FRAME_HEADER 0xFFu
+#define DEPTH_UART_FRAME_LEN 4u
+#define DEPTH_UART_TIMEOUT_MS 120u
+#define DEPTH_SENSOR_MAX_CM 600.0f
 
 /* ── BME280 I2C ─────────────────────────────────────────────────────────────
  */
@@ -241,9 +241,9 @@ static void DS18B20_SearchROM(void);
 static void DS18B20_StartConvertAll(void);
 static float DS18B20_ReadTemp(uint8_t index);
 
-/* ── JSN-SR04T ──────────────────────────────────────────────────────────────
+/* ── UART depth sensor ───────────────────────────────────────────────────────
  */
-static float JSNSR04T_ReadDistance(void);
+static float DepthSensor_ReadDistance(void);
 
 /* ── BME280 ─────────────────────────────────────────────────────────────────
  */
@@ -525,42 +525,45 @@ static float DS18B20_ReadTemp(uint8_t index) {
 
 /* ═══════════════════════════════════════════════════════════════════════════
  */
-/*                      JSN-SR04T — ULTRASONIC DRIVER                        */
+/*                       UART DEPTH SENSOR DRIVER                             */
 /* ═══════════════════════════════════════════════════════════════════════════
  */
 
 /**
- * @brief  Measure distance using JSN-SR04T (trigger/echo mode).
- * @return Distance in cm, or -1.0 on timeout
+ * @brief  Measure distance from the UART depth sensor.
+ * @note   Parser assumes a common 4-byte framed payload:
+ *         [0xFF][distance_hi][distance_lo][checksum].
+ *         If hardware variant differs, adapt only this function.
+ * @return Distance in cm, or -1.0 on timeout/invalid frame
  */
-static float JSNSR04T_ReadDistance(void) {
-  uint32_t timeout;
+static float DepthSensor_ReadDistance(void) {
+  uint8_t frame[DEPTH_UART_FRAME_LEN];
+  uint16_t distance_mm;
+  float distance_cm;
+  uint8_t checksum;
 
-  /* Send 10µs trigger pulse */
-  HAL_GPIO_WritePin(TRIG_PORT, TRIG_PIN, GPIO_PIN_SET);
-  delay_us(15);
-  HAL_GPIO_WritePin(TRIG_PORT, TRIG_PIN, GPIO_PIN_RESET);
-
-  /* Wait for echo to go HIGH (with timeout) */
-  timeout = 0;
-  while (HAL_GPIO_ReadPin(ECHO_PORT, ECHO_PIN) == GPIO_PIN_RESET) {
-    delay_us(1);
-    if (++timeout > US_TIMEOUT)
-      return -1.0f;
+  if (HAL_UART_Receive(DEPTH_SENSOR_UART, frame, DEPTH_UART_FRAME_LEN,
+                       DEPTH_UART_TIMEOUT_MS) != HAL_OK) {
+    return -1.0f;
   }
 
-  /* Measure echo pulse width */
-  __HAL_TIM_SET_COUNTER(&htim6, 0);
-  timeout = 0;
-  while (HAL_GPIO_ReadPin(ECHO_PORT, ECHO_PIN) == GPIO_PIN_SET) {
-    delay_us(1);
-    if (++timeout > US_TIMEOUT)
-      return -1.0f;
+  if (frame[0] != DEPTH_UART_FRAME_HEADER) {
+    return -1.0f;
   }
-  uint32_t echo_us = __HAL_TIM_GET_COUNTER(&htim6);
 
-  /* distance_cm = echo_us / 58 */
-  return (float)echo_us / 58.0f;
+  checksum = (uint8_t)(frame[0] + frame[1] + frame[2]);
+  if (checksum != frame[3]) {
+    return -1.0f;
+  }
+
+  distance_mm = (uint16_t)((frame[1] << 8) | frame[2]);
+  distance_cm = (float)distance_mm / 10.0f;
+
+  if (distance_cm < 0.0f || distance_cm > DEPTH_SENSOR_MAX_CM) {
+    return -1.0f;
+  }
+
+  return distance_cm;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -989,8 +992,8 @@ int main(void) {
 
     /* ═══════════════════════════════════════════════════════════════════════
      */
-    /*  STOP-AND-SAMPLE SEQUENCE (per WQM_Sensor_Suite_Guide.md)            */
-    /*  1. BME280  2. DS18B20  3. Fast analog  4. ORP  5. pH  6. DO  7. US */
+    /*  STOP-AND-SAMPLE SEQUENCE (per WQM_Sensor_Suite_Guide.md)              */
+    /*  1. BME280  2. DS18B20  3. Fast analog  4. ORP  5. pH  6. DO  7. Depth */
     /* ═══════════════════════════════════════════════════════════════════════
      */
 
@@ -1028,9 +1031,9 @@ int main(void) {
     /* ── Step 6: Read DO last (slowest — maximum settling time by now) ──── */
     sensor_data.do_mgl = Sensor_ReadDO(comp_temp, sensor_data.pressure_hpa);
 
-    /* ── Step 7: Read ultrasonic depth ───────────────────────────────────────
+    /* ── Step 7: Read UART depth sensor ──────────────────────────────────────
      */
-    sensor_data.depth_cm = JSNSR04T_ReadDistance();
+    sensor_data.depth_cm = DepthSensor_ReadDistance();
 
     /* ═══════════════════════════════════════════════════════════════════════
      */
@@ -1321,24 +1324,14 @@ static void MX_GPIO_Init(void) {
   __HAL_RCC_GPIOG_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_4, GPIO_PIN_RESET);
-
-  /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOB, LD1_Pin | LD3_Pin | LD2_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(USB_PowerSwitchOn_GPIO_Port, USB_PowerSwitchOn_Pin,
                     GPIO_PIN_RESET);
 
-  /*Configure GPIO pin : PE4 */
-  GPIO_InitStruct.Pin = GPIO_PIN_4;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : PE5 PE6 */
-  GPIO_InitStruct.Pin = GPIO_PIN_5 | GPIO_PIN_6;
+  /*Configure GPIO pin : PE6 */
+  GPIO_InitStruct.Pin = GPIO_PIN_6;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);

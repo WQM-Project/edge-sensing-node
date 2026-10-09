@@ -33,7 +33,7 @@ This repo contains the firmware for the **edge sensing node**: a NUCLEO-F722ZE b
 | Conductivity | DFRobot DFR0300 | Analog | PA5 (ADC\_CH5) | Electrical Conductivity | µS/cm |
 | ORP | DFRobot SEN0165 | Analog | PA6 (ADC\_CH6) | Oxidation-Reduction Potential | mV |
 | Temperature (×2) | DS18B20 | OneWire | PE6 | Water Temperature | °C |
-| Depth | JSN-SR04T | GPIO (Trig/Echo) | PE4 / PE5 | Water Level | cm |
+| Depth | IP68 Underwater Ultrasonic Obstacle Avoidance Sensor (6 m) | UART | USART3 RX (PD9) | Water Level | cm |
 | Atmospheric | BME280 | I2C1 | PB8/PB9 | Air Temp, Humidity, Pressure | °C, %, hPa |
 
 ---
@@ -72,7 +72,7 @@ Every `SAMPLE_INTERVAL_MS` (default **5 s**), the node serializes all sensor dat
 | `ec_uscm` | Electrical Conductivity in µS/cm |
 | `orp_mv` | Oxidation-Reduction Potential in mV |
 | `temp_w1` / `temp_w2` | Primary and backup water temperature (DS18B20) |
-| `depth_cm` | Ultrasonic water-level distance |
+| `depth_cm` | Ultrasonic water-level distance from UART depth frame |
 | `temp_air` / `humidity` / `pressure_hpa` | Atmospheric conditions (BME280) |
 
 ---
@@ -97,7 +97,7 @@ main()
         ├── Sensor_ReadORP()          Step 4: ORP
         ├── Sensor_ReadPH()           Step 5: pH
         ├── Sensor_ReadDO()           Step 6: DO (longest settling)
-        ├── JSNSR04T_ReadDistance()    Step 7: Ultrasonic depth
+        ├── DepthSensor_ReadDistance() Step 7: UART depth
         │
         ├── WQM_BuildJSON()           Serialize → JSON
         ├── Debug_Print()             TX via USART3
@@ -150,10 +150,9 @@ Key calibration values to adjust for your hardware:
 |---|---|
 | **ADC1** | 6 analog sensors (channels 3, 4, 5, 6, 10, 13), 16× oversampling |
 | **I2C1** | BME280 environmental sensor (addr `0x76`) |
-| **USART3** | Debug output + JSON telemetry TX (→ LoRa module in deployment) |
+| **USART3** | JSON telemetry TX + depth sensor UART RX |
 | **TIM6** | Microsecond-precision delay for OneWire timing |
 | **GPIO PE6** | DS18B20 OneWire data bus |
-| **GPIO PE4/PE5** | JSN-SR04T ultrasonic trigger/echo |
 | **GPIO PB0** | LD1 heartbeat LED |
 
 ---

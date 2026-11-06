@@ -36,14 +36,10 @@
  */
 typedef struct {
   float ph;
-  float turbidity_ntu;
   float tds_ppm;
   float do_mgl;
-  float ec_uscm;
   float orp_mv;
   float water_temp_1; /* DS18B20 primary   */
-  float water_temp_2; /* DS18B20 backup    */
-  float depth_cm;     /* IP68 UART depth   */
   float air_temp;     /* BMP280            */
   float pressure_hpa; /* BMP280            */
 
@@ -118,18 +114,13 @@ typedef struct {
  * manual ×(3.3/4095.0) and remove the ×2 — or set VDIV_SCALE to 1.0 here.
  * The current code assumes the 2:1 divider IS present on PA3. */
 
-/* ── Turbidity sensor (SEN0189) polynomial coefficients ─────────────────────
- */
-#define TURB_COEFF_A (-1120.4f)
-#define TURB_COEFF_B (5742.3f)
-#define TURB_COEFF_C (-4352.9f)
-
 /* ── TDS sensor (SEN0244) polynomial coefficients ───────────────────────────
  */
 #define TDS_COEFF_A (133.42f)
 #define TDS_COEFF_B (-255.86f)
 #define TDS_COEFF_C (857.39f)
 #define TDS_FACTOR (0.5f)
+#define TDS_TEMP_COEFF 0.02f /* 2% per °C temperature compensation */
 
 /* ── DO sensor (SEN0237-A) calibration ──────────────────────────────────────
  */
@@ -138,11 +129,6 @@ typedef struct {
           (sensor output ÷ 2 voltage-divider, reconstructed by VDIV_SCALE) */
 #define DO_CAL1_T 25       /* Calibration temperature (°C)         */
 #define DO_TEMP_COMP_MV 35 /* ~35 mV per °C compensation           */
-
-/* ── Conductivity sensor (DFR0300) ──────────────────────────────────────────
- */
-#define EC_K_CAL 1.0f       /* K-constant calibration factor  */
-#define EC_TEMP_COEFF 0.02f /* 2% per °C                     */
 
 /* ── ORP sensor (SEN0165) ───────────────────────────────────────────────────
  */
@@ -157,14 +143,6 @@ typedef struct {
 #define DS18B20_CMD_SEARCH 0xF0
 #define DS18B20_CMD_CONVERT 0x44
 #define DS18B20_CMD_READ_SCRATCH 0xBE
-
-/* ── IP68 underwater ultrasonic depth sensor (UART) ─────────────────────────
- */
-#define DEPTH_SENSOR_UART (&huart3)
-#define DEPTH_UART_FRAME_HEADER 0xFFu
-#define DEPTH_UART_FRAME_LEN 4u
-#define DEPTH_UART_TIMEOUT_MS 120u
-#define DEPTH_SENSOR_MAX_CM 600.0f
 
 /* ── BMP280 I2C ─────────────────────────────────────────────────────────────
  */
@@ -284,10 +262,6 @@ static void DS18B20_SearchROM(void);
 static void DS18B20_StartConvertAll(void);
 static float DS18B20_ReadTemp(uint8_t index);
 
-/* ── UART depth sensor ───────────────────────────────────────────────────────
- */
-static float DepthSensor_ReadDistance(void);
-
 /* ── BMP280 ─────────────────────────────────────────────────────────────────
  */
 static uint8_t BMP280_Init(void);
@@ -299,10 +273,8 @@ static uint32_t BMP280_CompensatePress(int32_t adc_P);
 /* ── Analog sensor conversions ──────────────────────────────────────────────
  */
 static float Sensor_ReadPH(void);
-static float Sensor_ReadTurbidity(void);
 static float Sensor_ReadTDS(float water_temp);
 static float Sensor_ReadDO(float water_temp, float pressure_hpa);
-static float Sensor_ReadConductivity(float water_temp);
 static float Sensor_ReadORP(void);
 
 /* ── JSON builder ───────────────────────────────────────────────────────────
@@ -600,51 +572,6 @@ static float DS18B20_ReadTemp(uint8_t index) {
 
 /* ═══════════════════════════════════════════════════════════════════════════
  */
-/*                       UART DEPTH SENSOR DRIVER                             */
-/* ═══════════════════════════════════════════════════════════════════════════
- */
-
-/**
- * @brief  Measure distance from the UART depth sensor.
- * @note   Parser assumes a common 4-byte framed payload:
- *         [0xFF][distance_hi][distance_lo][checksum].
- *         If hardware variant differs, adapt only this function.
- * @return Distance in cm, or -1.0 on timeout/invalid frame
- */
-static float DepthSensor_ReadDistance(void) {
-  uint8_t frame[DEPTH_UART_FRAME_LEN];
-  uint16_t distance_mm;
-  float distance_cm;
-  uint8_t checksum;
-
-  if (HAL_UART_Receive(DEPTH_SENSOR_UART, frame, DEPTH_UART_FRAME_LEN,
-                       DEPTH_UART_TIMEOUT_MS) != HAL_OK) {
-    return -1.0f;
-  }
-
-  if (frame[0] != DEPTH_UART_FRAME_HEADER) {
-    return -1.0f;
-  }
-
-  checksum = (uint8_t)(frame[0] + frame[1] + frame[2]);
-  if (checksum != frame[3]) {
-    return -1.0f;
-  }
-
-  distance_mm = (uint16_t)((frame[1] << 8) | frame[2]);
-  distance_cm = (float)distance_mm / 10.0f;
-
-  if (distance_cm < 0.0f || distance_cm > DEPTH_SENSOR_MAX_CM) {
-    return -1.0f;
-  }
-
-  return distance_cm;
-}
-
-/* ═══════════════════════════════════════════════════════════════════════════
- */
-/* ═══════════════════════════════════════════════════════════════════════════
- */
 /*                         BMP280 — I2C DRIVER                               */
 /* ═══════════════════════════════════════════════════════════════════════════
  */
@@ -875,20 +802,6 @@ static float Sensor_ReadPH(void) {
 }
 
 /**
- * @brief  Read turbidity from SEN0189.
- *         Quadratic polynomial: NTU = a×V² + b×V + c
- */
-static float Sensor_ReadTurbidity(void) {
-  float v = ADC_Read_Voltage(ADC_CHANNEL_10); /* PC0 */
-  float ntu = TURB_COEFF_A * v * v + TURB_COEFF_B * v + TURB_COEFF_C;
-  if (ntu < 0.0f)
-    ntu = 0.0f;
-  if (ntu > 3000.0f)
-    ntu = 3000.0f;
-  return ntu;
-}
-
-/**
  * @brief  Read TDS from SEN0244 with temperature compensation.
  *         DFRobot polynomial: TDS = (133.42×Vc³ - 255.86×Vc² + 857.39×Vc) × 0.5
  */
@@ -896,7 +809,7 @@ static float Sensor_ReadTDS(float water_temp) {
   float voltage = ADC_Read_Voltage(ADC_CHANNEL_13); /* PC3 */
 
   /* Temperature compensation */
-  float comp_coeff = 1.0f + EC_TEMP_COEFF * (water_temp - 25.0f);
+  float comp_coeff = 1.0f + TDS_TEMP_COEFF * (water_temp - 25.0f);
   float comp_v = voltage / comp_coeff;
 
   /* Polynomial conversion */
@@ -976,25 +889,6 @@ static float Sensor_ReadDO(float water_temp, float pressure_hpa) {
 }
 
 /**
- * @brief  Read electrical conductivity from DFR0300 (K=1).
- *         Linear approximation with temperature normalization to 25°C.
- */
-static float Sensor_ReadConductivity(float water_temp) {
-  float voltage = ADC_Read_Voltage(ADC_CHANNEL_5); /* PA5 */
-
-  /* Raw EC calculation (µS/cm) */
-  float ec_raw =
-      (voltage * 1000.0f) / (820.0f * 200.0f) * EC_K_CAL * 1000000.0f;
-
-  /* Temperature compensation: normalize to 25°C */
-  float ec_25 = ec_raw / (1.0f + EC_TEMP_COEFF * (water_temp - 25.0f));
-
-  if (ec_25 < 0.0f)
-    ec_25 = 0.0f;
-  return ec_25;
-}
-
-/**
  * @brief  Read ORP from SEN0165.
  *         The SEN0165 signal board outputs a voltage centred around ~2.0V
  *         (at 0 mV ORP).  The relationship is linear:
@@ -1038,14 +932,10 @@ static uint16_t WQM_BuildJSON(const WQM_SensorData_t *data, char *buf,
       "\"id\":\"%s\","
       "\"ts\":%lu,"
       "\"pH\":%.2f,"
-      "\"turb_ntu\":%.1f,"
       "\"tds_ppm\":%.1f,"
       "\"do_mgl\":%.2f,"
-      "\"ec_uscm\":%.1f,"
       "\"orp_mv\":%.1f,"
       "\"temp_w1\":%.2f,"
-      "\"temp_w2\":%.2f,"
-      "\"depth_cm\":%.1f,"
       "\"temp_air\":%.2f,"
       "\"pressure_hpa\":%.2f,"
       "\"lat\":%.6f,"
@@ -1059,9 +949,9 @@ static uint16_t WQM_BuildJSON(const WQM_SensorData_t *data, char *buf,
       "\"pitch\":%.1f,"
       "\"roll\":%.1f"
       "}\r\n",
-      DEVICE_ID, (unsigned long)HAL_GetTick(), data->ph, data->turbidity_ntu,
-      data->tds_ppm, data->do_mgl, data->ec_uscm, data->orp_mv,
-      data->water_temp_1, data->water_temp_2, data->depth_cm, data->air_temp,
+      DEVICE_ID, (unsigned long)HAL_GetTick(), data->ph,
+      data->tds_ppm, data->do_mgl, data->orp_mv,
+      data->water_temp_1, data->air_temp,
       data->pressure_hpa, data->latitude, data->longitude, data->altitude_m,
       data->speed_knots, data->course_deg, data->gps_fix, data->satellites,
       data->heading, data->pitch, data->roll);
@@ -1210,8 +1100,8 @@ int main(void) {
 
     /* ═══════════════════════════════════════════════════════════════════════
      */
-    /*  STOP-AND-SAMPLE SEQUENCE (per WQM_Sensor_Suite_Guide.md)              */
-    /*  1. BMP280  2. DS18B20  3. Fast analog  4. ORP  5. pH  6. DO  7. Depth */
+    /*  STOP-AND-SAMPLE SEQUENCE                                              */
+    /*  1. BMP280  2. DS18B20  3. TDS  4. ORP  5. pH  6. DO                   */
     /* ═══════════════════════════════════════════════════════════════════════
      */
 
@@ -1230,7 +1120,6 @@ int main(void) {
     }
     sensor_data.water_temp_1 =
         DS18B20_ReadTemp(0);         /* Single sensor — index 0 */
-    sensor_data.water_temp_2 = 0.0f; /* Second sensor not used  */
 
     /* Use primary temp for compensation; fall back to 25°C if probe fails */
     float comp_temp = sensor_data.water_temp_1;
@@ -1238,10 +1127,8 @@ int main(void) {
       comp_temp = 25.0f; /* Default if probe disconnected */
     }
 
-    /* ── Step 3: Read fast analog sensors (conductivity, TDS, turbidity) ── */
-    sensor_data.ec_uscm = Sensor_ReadConductivity(comp_temp);
+    /* ── Step 3: Read fast analog sensor (TDS) ───────────────────────────── */
     sensor_data.tds_ppm = Sensor_ReadTDS(comp_temp);
-    sensor_data.turbidity_ntu = Sensor_ReadTurbidity();
 
     /* ── Step 4: Read ORP (~20s settling in real deployment, instant here)  */
     sensor_data.orp_mv = Sensor_ReadORP();
@@ -1253,11 +1140,7 @@ int main(void) {
     /* ── Step 6: Read DO last (slowest — maximum settling time by now) ──── */
     sensor_data.do_mgl = Sensor_ReadDO(comp_temp, sensor_data.pressure_hpa);
 
-    /* ── Step 7: Read UART depth sensor ──────────────────────────────────────
-     */
-    sensor_data.depth_cm = DepthSensor_ReadDistance();
-
-    /* ── Step 8: Read IMU (BNO085) ───────────────────────────────────────── */
+    /* ── Step 7: Read IMU (BNO085) ───────────────────────────────────────── */
     if (bno085_ok) {
       BNO085_Read(&hi2c1, &imu_orient);
       if (imu_orient.valid) {
@@ -1273,7 +1156,7 @@ int main(void) {
       }
     }
 
-    /* ── Step 9: Copy latest GPS data ───────────────────────────────────────
+    /* ── Step 8: Copy latest GPS data ───────────────────────────────────────
      */
     GPS_GetData(&gps_data);
     sensor_data.latitude = gps_data.latitude;

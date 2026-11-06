@@ -18,6 +18,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "bno085.h"
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 
 /* Private defines -----------------------------------------------------------*/
@@ -29,6 +30,7 @@
 #define SHTP_CHAN_INPUT_REPORT  3  /**< Device → host: sensor reports            */
 
 /* ── SH-2 report IDs ───────────────────────────────────────────────────── */
+#define SH2_ROTATION_VECTOR        0x05
 #define SH2_GAME_ROTATION_VECTOR   0x08
 #define SH2_ARVR_ROTATION_VECTOR   0x28
 #define SH2_SET_FEATURE_CMD        0xFD
@@ -42,8 +44,8 @@
 /* ── SHTP header size ───────────────────────────────────────────────────── */
 #define SHTP_HEADER_SIZE           4
 
-/* ── Maximum SHTP cargo we expect (rotation vector report is tiny) ────── */
-#define SHTP_MAX_CARGO             128
+/* ── Maximum SHTP cargo we expect (advertisement packet is ~276 bytes) ─── */
+#define SHTP_MAX_CARGO             300
 #define SHTP_MAX_PACKET            (SHTP_HEADER_SIZE + SHTP_MAX_CARGO)
 
 /* ── I2C timeout ────────────────────────────────────────────────────────── */
@@ -66,6 +68,12 @@ static uint8_t shtp_seq[6] = {0};
 
 /** Shared I/O buffer for SHTP packets */
 static uint8_t shtp_buf[SHTP_MAX_PACKET];
+
+/** Active I2C address determined during Init (0x4A or 0x4B shifted) */
+uint8_t bno085_i2c_addr = BNO085_I2C_ADDR;
+
+/** Stored report interval for re-enabling after reset */
+static uint16_t configured_report_ms = 100;
 
 /* Private function prototypes -----------------------------------------------*/
 
@@ -108,7 +116,7 @@ static HAL_StatusTypeDef shtp_send(I2C_HandleTypeDef *hi2c,
     memcpy(&shtp_buf[SHTP_HEADER_SIZE], payload, payload_len);
   }
 
-  return HAL_I2C_Master_Transmit(hi2c, BNO085_I2C_ADDR, shtp_buf, total,
+  return HAL_I2C_Master_Transmit(hi2c, bno085_i2c_addr, shtp_buf, total,
                                   BNO085_I2C_TIMEOUT);
 }
 
@@ -120,36 +128,68 @@ static HAL_StatusTypeDef shtp_send(I2C_HandleTypeDef *hi2c,
  *
  * The SHTP header occupies the first 4 bytes of shtp_buf.
  * Cargo starts at shtp_buf[SHTP_HEADER_SIZE].
+ *
+ * CRITICAL: SHTP over I2C requires reading the ENTIRE packet (header + cargo)
+ * in a SINGLE I2C transaction.  If you issue two separate Master_Receive calls
+ * the BNO085 resets its internal byte pointer at each START condition, so the
+ * second read starts a brand-new (usually empty) transaction — not a
+ * continuation of the first.  The correct sequence is:
+ *   1. Peek: read exactly 4 bytes to discover the total packet length.
+ *   2. Full read: read the complete packet (up to SHTP_MAX_PACKET bytes) in
+ *      one transaction, which re-sends the header then the cargo.
  */
 static int16_t shtp_receive(I2C_HandleTypeDef *hi2c, uint8_t *channel_out) {
-  /* Read the 4-byte SHTP header first to learn the total length */
-  HAL_StatusTypeDef st = HAL_I2C_Master_Receive(hi2c, BNO085_I2C_ADDR,
-                                                 shtp_buf, SHTP_HEADER_SIZE,
-                                                 BNO085_I2C_TIMEOUT);
+  /* Step 1 — peek at the 4-byte SHTP header to learn packet length. */
+  uint8_t hdr[SHTP_HEADER_SIZE];
+  HAL_StatusTypeDef st = HAL_I2C_Master_Receive(hi2c, bno085_i2c_addr, hdr,
+                                                SHTP_HEADER_SIZE,
+                                                BNO085_I2C_TIMEOUT);
   if (st != HAL_OK) return -1;
 
-  /* Parse length (little-endian, bit 15 = continuation flag) */
-  uint16_t pkt_len = (uint16_t)(shtp_buf[0] | ((shtp_buf[1] & 0x7F) << 8));
+  /* Parse length (little-endian, bit 15 = continuation flag — ignore it) */
+  uint16_t pkt_len = (uint16_t)(hdr[0] | ((hdr[1] & 0x7F) << 8));
 
-  if (pkt_len <= SHTP_HEADER_SIZE || pkt_len == 0xFFFF) {
-    /* No data waiting (BNO085 returns 0xFFFF when nothing is available) */
+  if (pkt_len <= SHTP_HEADER_SIZE || pkt_len == 0x7FFF || pkt_len == 0xFFFF) {
+    /* Bus idle or empty packet — nothing to do */
     return 0;
   }
 
-  /* Clamp to buffer size */
-  if (pkt_len > SHTP_MAX_PACKET) pkt_len = SHTP_MAX_PACKET;
+  uint16_t read_len = pkt_len;
+  if (read_len > SHTP_MAX_PACKET) {
+    read_len = SHTP_MAX_PACKET;
+  }
 
-  /* Now read the full packet (header + cargo) */
-  st = HAL_I2C_Master_Receive(hi2c, BNO085_I2C_ADDR, shtp_buf, pkt_len,
-                               BNO085_I2C_TIMEOUT);
+  /*
+   * Step 2 — full-packet read in a single I2C transaction.
+   * The BNO085 re-clocks the 4-byte header first, then the cargo, all in one
+   * transfer.  We receive into shtp_buf directly so header + cargo end up
+   * contiguous: shtp_buf[0..3] = header, shtp_buf[4..] = cargo.
+   */
+  st = HAL_I2C_Master_Receive(hi2c, bno085_i2c_addr, shtp_buf, read_len,
+                              BNO085_I2C_TIMEOUT);
   if (st != HAL_OK) return -1;
+
+  /* Drain any bytes beyond our buffer limit to keep the bus clean */
+  if (pkt_len > read_len) {
+    uint16_t excess = pkt_len - read_len;
+    uint8_t discard[16];
+    while (excess > 0) {
+      uint16_t chunk = (excess > (uint16_t)sizeof(discard))
+                           ? (uint16_t)sizeof(discard)
+                           : excess;
+      HAL_I2C_Master_Receive(hi2c, bno085_i2c_addr, discard, chunk, 20);
+      excess -= chunk;
+    }
+  }
 
   *channel_out = shtp_buf[2];
 
-  /* Update our copy of the device's sequence number */
-  shtp_seq[*channel_out] = shtp_buf[3];
+  /* Mirror the device's sequence number so our next TX seq is in sync */
+  if (*channel_out < (uint8_t)sizeof(shtp_seq)) {
+    shtp_seq[*channel_out] = shtp_buf[3];
+  }
 
-  return (int16_t)(pkt_len - SHTP_HEADER_SIZE);
+  return (int16_t)(read_len - SHTP_HEADER_SIZE);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════ */
@@ -239,45 +279,122 @@ void BNO085_Reset(I2C_HandleTypeDef *hi2c) {
  * @return 0 on success, 1 if chip did not respond.
  */
 uint8_t BNO085_Init(I2C_HandleTypeDef *hi2c, uint16_t report_ms) {
+  char dbg[96];
+
+  /* Probe both 0x4A and 0x4B addresses with retries */
+  uint8_t found = 0;
+  const uint8_t candidate_addrs[2] = {BNO085_I2C_ADDR, BNO085_I2C_ADDR_ALT};
+
+  for (int retry = 0; retry < 5 && !found; retry++) {
+    for (int i = 0; i < 2; i++) {
+      if (HAL_I2C_IsDeviceReady(hi2c, candidate_addrs[i], 2, 50) == HAL_OK) {
+        bno085_i2c_addr = candidate_addrs[i];
+        found = 1;
+        break;
+      }
+    }
+    if (!found) {
+      HAL_Delay(20);
+    }
+  }
+
+  if (!found) {
+    Debug_Print("[BNO085] Not responding at address 0x4A or 0x4B\r\n");
+    return 1; /* Chip not responding at either 0x4A or 0x4B */
+  }
+
+  snprintf(dbg, sizeof(dbg), "[BNO085] Device detected at 0x%02X\r\n",
+           bno085_i2c_addr >> 1);
+  Debug_Print(dbg);
+
   /* Clear sequence counters */
   memset(shtp_seq, 0, sizeof(shtp_seq));
 
   /* Soft-reset */
   BNO085_Reset(hi2c);
-  HAL_Delay(300);  /* BNO085 needs ~300 ms after reset to boot */
+  HAL_Delay(400);  /* BNO085 needs ~300-500 ms after reset to boot */
 
-  /* Drain any pending packets (advertisements, unsolicited reports) */
+  /*
+   * Drain startup packets (advertisements, reset notification).
+   * Allow a few consecutive empty reads before giving up so we don't
+   * abort too early when the BNO085 is still booting and briefly quiet.
+   */
   uint8_t chan;
-  for (int drain = 0; drain < 10; drain++) {
+  int drained = 0;
+  int empty_streak = 0;
+  for (int drain = 0; drain < 20; drain++) {
     int16_t len = shtp_receive(hi2c, &chan);
-    if (len <= 0) break;
-    HAL_Delay(10);
+    if (len > 0) {
+      drained++;
+      empty_streak = 0;
+      HAL_Delay(10);
+    } else {
+      empty_streak++;
+      if (empty_streak >= 3) break; /* Three consecutive empty reads — bus idle */
+      HAL_Delay(20);
+    }
   }
 
-  /* Verify communication: try to read something from the sensor */
-  /* Send Product ID request */
+  snprintf(dbg, sizeof(dbg), "[BNO085] Drained %d boot packet(s)\r\n", drained);
+  Debug_Print(dbg);
+
+  /* Verify communication: send Product ID request */
   uint8_t pid_req[2] = {SH2_PRODUCT_ID_REQ, 0};
   shtp_send(hi2c, SHTP_CHAN_CONTROL, pid_req, sizeof(pid_req));
-  HAL_Delay(50);
+  HAL_Delay(40);
 
-  /* Look for Product ID response */
+  /* Look for Product ID response (give it up to 500 ms) */
   uint8_t got_response = 0;
-  for (int tries = 0; tries < 5; tries++) {
+  for (int tries = 0; tries < 25; tries++) {
     int16_t len = shtp_receive(hi2c, &chan);
     if (len > 0 && chan == SHTP_CHAN_CONTROL &&
         shtp_buf[SHTP_HEADER_SIZE] == SH2_PRODUCT_ID_RESP) {
       got_response = 1;
+      uint8_t sw_maj = shtp_buf[SHTP_HEADER_SIZE + 2];
+      uint8_t sw_min = shtp_buf[SHTP_HEADER_SIZE + 3];
+      snprintf(dbg, sizeof(dbg), "[BNO085] SH-2 Product ID OK (FW v%d.%d)\r\n",
+               sw_maj, sw_min);
+      Debug_Print(dbg);
       break;
     }
     HAL_Delay(20);
   }
 
-  if (!got_response) return 1;  /* Sensor not responding */
+  /* Retry once if no response on first attempt */
+  if (!got_response) {
+    Debug_Print("[BNO085] Retrying Product ID request...\r\n");
+    shtp_send(hi2c, SHTP_CHAN_CONTROL, pid_req, sizeof(pid_req));
+    HAL_Delay(40);
+    for (int tries = 0; tries < 15; tries++) {
+      int16_t len = shtp_receive(hi2c, &chan);
+      if (len > 0 && chan == SHTP_CHAN_CONTROL &&
+          shtp_buf[SHTP_HEADER_SIZE] == SH2_PRODUCT_ID_RESP) {
+        got_response = 1;
+        uint8_t sw_maj = shtp_buf[SHTP_HEADER_SIZE + 2];
+        uint8_t sw_min = shtp_buf[SHTP_HEADER_SIZE + 3];
+        snprintf(dbg, sizeof(dbg), "[BNO085] SH-2 Product ID OK on retry (FW v%d.%d)\r\n",
+                 sw_maj, sw_min);
+        Debug_Print(dbg);
+        break;
+      }
+      HAL_Delay(20);
+    }
+  }
 
-  /* Enable Game Rotation Vector report */
+  if (!got_response) {
+    Debug_Print("[BNO085] No Product ID response after reset\r\n");
+    return 1;  /* Sensor not responding */
+  }
+
+  /* Save configured report interval */
+  configured_report_ms = report_ms;
+
+  /* Enable 9-DOF Rotation Vector and 6-DOF Game Rotation Vector reports */
   uint32_t interval_us = (uint32_t)report_ms * 1000U;
+  shtp_set_feature(hi2c, SH2_ROTATION_VECTOR, interval_us);
+  HAL_Delay(40);
   shtp_set_feature(hi2c, SH2_GAME_ROTATION_VECTOR, interval_us);
-  HAL_Delay(50);
+  HAL_Delay(40);
 
   /* Drain the feature response */
   for (int drain = 0; drain < 5; drain++) {
@@ -290,69 +407,96 @@ uint8_t BNO085_Init(I2C_HandleTypeDef *hi2c, uint16_t report_ms) {
 }
 
 /**
- * @brief  Poll the BNO085 for a new Game Rotation Vector report and
- *         convert the quaternion to Euler angles.
+ * @brief  Poll the BNO085 for new orientation reports (Rotation Vector /
+ *         Game Rotation Vector) and convert quaternion to Euler angles.
  *
  * @return 0 = new data written to *orient.
  *         1 = no new data (call again later).
  *         2 = I2C communication error.
  */
 uint8_t BNO085_Read(I2C_HandleTypeDef *hi2c, BNO085_Orientation_t *orient) {
-  uint8_t chan;
-  int16_t cargo_len = shtp_receive(hi2c, &chan);
+  uint8_t found_report = 0;
 
-  if (cargo_len < 0) return 2;  /* I2C error */
-  if (cargo_len == 0) return 1; /* No data   */
+  /* Drain pending packets from BNO085 FIFO buffer so we get the freshest rotation report */
+  for (int iter = 0; iter < 20; iter++) {
+    uint8_t chan = 0;
+    int16_t cargo_len = shtp_receive(hi2c, &chan);
 
-  /* We only care about Input Report channel (3) */
-  if (chan != SHTP_CHAN_INPUT_REPORT) return 1;
+    if (cargo_len <= 0) break;
 
-  uint8_t *cargo = &shtp_buf[SHTP_HEADER_SIZE];
+    /* If device reset or sent an advertisement, re-enable feature reports */
+    if (chan == SHTP_CHAN_COMMAND || chan == SHTP_CHAN_EXECUTABLE) {
+      uint32_t interval_us = (uint32_t)configured_report_ms * 1000U;
+      shtp_set_feature(hi2c, SH2_ROTATION_VECTOR, interval_us);
+      shtp_set_feature(hi2c, SH2_GAME_ROTATION_VECTOR, interval_us);
+      continue;
+    }
 
-  /*
-   * Input Report header:
-   *   [0]    = Report ID
-   *   [1]    = Sequence number
-   *   [2]    = Status & delay
-   *   [3]    = Delay (LSB)
-   *   [4-5]  = i (Q14 signed)
-   *   [6-7]  = j (Q14 signed)
-   *   [8-9]  = k (Q14 signed)
-   *   [10-11]= real (Q14 signed)
-   *   [12-13]= accuracy (Q12 signed, radians) — for ARVR; game RV has 0
-   */
-  uint8_t report_id = cargo[0];
+    /* We only care about Input Report channel (3) */
+    if (chan != SHTP_CHAN_INPUT_REPORT) continue;
 
-  if (report_id != SH2_GAME_ROTATION_VECTOR &&
-      report_id != SH2_ARVR_ROTATION_VECTOR) {
-    return 1;  /* Not the report we want */
+    uint8_t *cargo = &shtp_buf[SHTP_HEADER_SIZE];
+    uint16_t offset = 0;
+
+    while (offset < cargo_len) {
+      uint8_t report_id = cargo[offset];
+
+      /* Timestamps: Base Timestamp (0xFB, 0xF1), Timestamp Rebase (0xFA), Timestamp Reference (0xF2) = 5 bytes */
+      if (report_id == 0xFB || report_id == 0xFA || report_id == 0xF1 || report_id == 0xF2) {
+        offset += 5;
+        continue;
+      }
+
+      /* Determine expected report length:
+       *   SH2_ROTATION_VECTOR (0x05) & SH2_ARVR_ROTATION_VECTOR (0x28): 14 bytes (with accuracy)
+       *   SH2_GAME_ROTATION_VECTOR (0x08) & SH2_ARVR_GAME_ROTATION_VECTOR (0x29): 12 bytes (no accuracy)
+       */
+      uint8_t rpt_size = 0;
+      if (report_id == SH2_ROTATION_VECTOR || report_id == SH2_ARVR_ROTATION_VECTOR) {
+        rpt_size = 14;
+      } else if (report_id == SH2_GAME_ROTATION_VECTOR || report_id == 0x29) {
+        rpt_size = 12;
+      }
+
+      if (rpt_size > 0) {
+        if (offset + rpt_size > cargo_len) break; /* Truncated in packet */
+
+        /* Parse Q14 fixed-point quaternion components */
+        int16_t qi_raw = (int16_t)(cargo[offset + 4]  | (cargo[offset + 5]  << 8));
+        int16_t qj_raw = (int16_t)(cargo[offset + 6]  | (cargo[offset + 7]  << 8));
+        int16_t qk_raw = (int16_t)(cargo[offset + 8]  | (cargo[offset + 9]  << 8));
+        int16_t qr_raw = (int16_t)(cargo[offset + 10] | (cargo[offset + 11] << 8));
+
+        float qi = (float)qi_raw * Q14_SCALE;
+        float qj = (float)qj_raw * Q14_SCALE;
+        float qk = (float)qk_raw * Q14_SCALE;
+        float qr = (float)qr_raw * Q14_SCALE;
+
+        /* Convert quaternion to Euler angles (yaw / pitch / roll) */
+        quat_to_euler(qi, qj, qk, qr,
+                      &orient->yaw, &orient->pitch, &orient->roll);
+
+        /* Parse accuracy (Q12) if 14-byte format */
+        if (rpt_size == 14) {
+          int16_t acc_raw = (int16_t)(cargo[offset + 12] | (cargo[offset + 13] << 8));
+          orient->accuracy = (float)acc_raw * Q12_SCALE;
+        } else {
+          orient->accuracy = 0.0f;
+        }
+
+        found_report = 1;
+        orient->valid = 1;
+        offset += rpt_size;
+      }
+      /* Skip standard 10-byte motion reports if present (accel, gyro, mag, lin_accel, gravity) */
+      else if (report_id >= 0x01 && report_id <= 0x06) {
+        offset += 10;
+      }
+      else {
+        break; /* Unhandled report type, end packet parse */
+      }
+    }
   }
 
-  if (cargo_len < 14) return 1;  /* Truncated */
-
-  /* Parse Q14 fixed-point quaternion components */
-  int16_t qi_raw = (int16_t)(cargo[4]  | (cargo[5]  << 8));
-  int16_t qj_raw = (int16_t)(cargo[6]  | (cargo[7]  << 8));
-  int16_t qk_raw = (int16_t)(cargo[8]  | (cargo[9]  << 8));
-  int16_t qr_raw = (int16_t)(cargo[10] | (cargo[11] << 8));
-
-  float qi = (float)qi_raw * Q14_SCALE;
-  float qj = (float)qj_raw * Q14_SCALE;
-  float qk = (float)qk_raw * Q14_SCALE;
-  float qr = (float)qr_raw * Q14_SCALE;
-
-  /* Convert quaternion to Euler angles */
-  quat_to_euler(qi, qj, qk, qr,
-                &orient->yaw, &orient->pitch, &orient->roll);
-
-  /* Parse accuracy (Q12, only meaningful for ARVR rotation vector) */
-  if (cargo_len >= 14) {
-    int16_t acc_raw = (int16_t)(cargo[12] | (cargo[13] << 8));
-    orient->accuracy = (float)acc_raw * Q12_SCALE;
-  } else {
-    orient->accuracy = 0.0f;
-  }
-
-  orient->valid = 1;
-  return 0;
+  return found_report ? 0 : 1;
 }

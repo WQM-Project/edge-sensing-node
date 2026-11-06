@@ -44,9 +44,8 @@ typedef struct {
   float water_temp_1; /* DS18B20 primary   */
   float water_temp_2; /* DS18B20 backup    */
   float depth_cm;     /* IP68 UART depth   */
-  float air_temp;     /* BME280            */
-  float humidity;     /* BME280            */
-  float pressure_hpa; /* BME280            */
+  float air_temp;     /* BMP280            */
+  float pressure_hpa; /* BMP280            */
 
   /* ── Navigation / localisation (BNO085 + GPS) ──────────────────────── */
   float latitude;     /* GPS decimal degrees, north +     */
@@ -61,12 +60,9 @@ typedef struct {
   float roll;         /* BNO085 roll  (degrees)           */
 } WQM_SensorData_t;
 
-/* ── BME280 calibration data (from chip NVM) ────────────────────────────────
+/* ── BMP280 calibration data (from chip NVM) ────────────────────────────────
  * This structure holds the factory-set calibration coefficients (trimming
- * parameters) burned into the BME280 sensor's non-volatile memory (NVM).
- * These values must be read from the sensor during initialization and are
- * essential for compensating the raw ADC readings into actual physical
- * units (Temperature in °C, Pressure in Pa, Humidity in %).
+ * parameters) burned into the BMP280 sensor's non-volatile memory (NVM).
  */
 typedef struct {
   /* Temperature compensation parameters */
@@ -84,15 +80,7 @@ typedef struct {
   int16_t dig_P7;
   int16_t dig_P8;
   int16_t dig_P9;
-
-  /* Humidity compensation parameters */
-  uint8_t dig_H1;
-  int16_t dig_H2;
-  uint8_t dig_H3;
-  int16_t dig_H4;
-  int16_t dig_H5;
-  int8_t dig_H6;
-} BME280_CalibData_t;
+} BMP280_CalibData_t;
 
 /* USER CODE END PTD */
 
@@ -106,11 +94,29 @@ typedef struct {
 #define VDIV_SCALE 2.0f        /* Voltage divider 2:1 (10k/10k) */
 #define ADC_SAMPLES 16         /* Oversampling count             */
 
-/* ── pH sensor (SEN0161) calibration defaults ───────────────────────────────
+/* ── pH sensor (robu.in Analog pH Sensor Kit) ───────────────────────────────
+ *
+ * Transfer curve from vendor source code (Arduino 5V / 10-bit version):
+ *   phValue = avgADC × 5.0 / 1024 / 6          → V at ADC pin (0–5V world)
+ *   phValue = 3.5 × phValue                    → pH = 3.5 × V_sensor
+ *
+ * On STM32 (3.3V / 12-bit) with 2:1 voltage divider on PA3:
+ *   V_sensor = (ADC_raw / 4095.0) × 3.3 × 2   (ADC_Read_Voltage returns this)
+ *   pH       = PH_SCALE × V_sensor + PH_OFFSET
+ *
+ * Neutral point check: pH 7.0 → V_sensor ≈ 2.0V → 3.5 × 2.0 = 7.0 ✓
+ * Acid point check:    pH 4.0 → V_sensor ≈ 1.14V → 3.5 × 1.14 ≈ 4.0 ✓
+ *
+ * PH_OFFSET is a one-point trim: short the BNC connector (→ pH 7.0 equivalent),
+ * read the displayed value, and set PH_OFFSET = 7.0 - displayed_value.
  */
-/* Two-point calibration: pH 7.0 → ~2.50V, pH 4.0 → ~3.03V (at sensor board) */
-#define PH_CAL_SLOPE (-5.70f)
-#define PH_CAL_OFFSET (21.34f)
+#define PH_SCALE (3.5f)  /* Vendor-specified linear scale factor      */
+#define PH_OFFSET (0.0f) /* One-point calibration trim (adjust in situ)*/
+
+/* NOTE: If PA3 has NO hardware voltage divider (sensor output 0-3V direct),
+ * change ADC_Read_Voltage() call for pH to use ADC_Read_Channel() with
+ * manual ×(3.3/4095.0) and remove the ×2 — or set VDIV_SCALE to 1.0 here.
+ * The current code assumes the 2:1 divider IS present on PA3. */
 
 /* ── Turbidity sensor (SEN0189) polynomial coefficients ─────────────────────
  */
@@ -127,7 +133,9 @@ typedef struct {
 
 /* ── DO sensor (SEN0237-A) calibration ──────────────────────────────────────
  */
-#define DO_CAL1_V 1600     /* Calibration voltage (mV) at cal temp */
+#define DO_CAL1_V                                                              \
+  1320 /* Calibration voltage (mV): measured 1.32V in air at 25°C             \
+          (sensor output ÷ 2 voltage-divider, reconstructed by VDIV_SCALE) */
 #define DO_CAL1_T 25       /* Calibration temperature (°C)         */
 #define DO_TEMP_COMP_MV 35 /* ~35 mV per °C compensation           */
 
@@ -158,17 +166,19 @@ typedef struct {
 #define DEPTH_UART_TIMEOUT_MS 120u
 #define DEPTH_SENSOR_MAX_CM 600.0f
 
-/* ── BME280 I2C ─────────────────────────────────────────────────────────────
+/* ── BMP280 I2C ─────────────────────────────────────────────────────────────
  */
-#define BME280_ADDR (0x76 << 1) /* 7-bit addr left-shifted for HAL */
-#define BME280_REG_ID 0xD0
-#define BME280_REG_CTRL_HUM 0xF2
-#define BME280_REG_CTRL_MEAS 0xF4
-#define BME280_REG_CONFIG 0xF5
-#define BME280_REG_CALIB_00 0x88 /* Temp/pressure calib start      */
-#define BME280_REG_CALIB_26 0xE1 /* Humidity calib start            */
-#define BME280_REG_DATA 0xF7     /* Data burst read start           */
-#define BME280_CHIP_ID 0x60
+#define BMP280_ADDR_PRIMARY (0x76 << 1) /* 7-bit addr left-shifted for HAL */
+#define BMP280_ADDR_SECONDARY (0x77 << 1)
+#define BMP280_REG_CALIB_00 0x88 /* Factory calib data start (24 bytes)     */
+#define BMP280_REG_ID 0xD0
+#define BMP280_REG_RESET 0xE0
+#define BMP280_REG_STATUS 0xF3
+#define BMP280_REG_CTRL_MEAS 0xF4
+#define BMP280_REG_CONFIG 0xF5
+#define BMP280_REG_DATA 0xF7 /* Press MSB..XLSB, Temp MSB..XLSB (6 bytes)*/
+#define BMP280_CHIP_ID 0x58
+#define BMP280_RESET_CMD 0xB6
 
 /* ── JSON buffer ────────────────────────────────────────────────────────────
  */
@@ -180,7 +190,7 @@ typedef struct {
 
 /* ── Sampling interval ──────────────────────────────────────────────────────
  */
-#define SAMPLE_INTERVAL_MS 5000 /* 5 seconds between readings     */
+#define SAMPLE_INTERVAL_MS 1000 /* 1 second between readings     */
 
 /* ── Device ID ──────────────────────────────────────────────────────────────
  */
@@ -209,8 +219,11 @@ PCD_HandleTypeDef hpcd_USB_OTG_FS;
 
 /* USER CODE BEGIN PV */
 
-static BME280_CalibData_t bme280_calib;
-static int32_t bme280_t_fine; /* Shared between T/P/H comp  */
+static BMP280_CalibData_t bmp280_calib;
+static int32_t bmp280_t_fine; /* Shared between T & P comp  */
+static uint8_t bmp280_i2c_addr = BMP280_ADDR_PRIMARY;
+static uint8_t bmp280_ok = 0;
+static uint8_t bno085_ok = 0; /* 1 if BNO085 initialized */
 static WQM_SensorData_t sensor_data;
 static char json_buf[JSON_BUF_SIZE];
 static uint32_t sample_counter = 0;
@@ -225,7 +238,8 @@ static GPS_Data_t gps_data;
 static uint8_t ds18b20_rom[2][8]; /* ROM codes for up to 2 sensors       */
 static uint8_t ds18b20_count = 0; /* Number of sensors discovered        */
 
-/* DO saturation lookup table (mg/L × 100) from 0°C to 40°C */
+/* DO saturation lookup table (mg/L × 1000) from 0°C to 40°C
+ * e.g. DO_Table[25] = 8250 → 8.250 mg/L (standard O₂ saturation at 25°C) */
 static const uint16_t DO_Table[41] = {
     14460, 14220, 13820, 13440, 13090, 12740, 12420, 12110, 11810, 11530, 11260,
     11010, 10770, 10530, 10300, 10080, 9860,  9660,  9460,  9270,  9080,  8900,
@@ -248,7 +262,8 @@ static void MX_UART4_Init(void);
 
 /* ── Microsecond delay ──────────────────────────────────────────────────────
  */
-static void delay_us(uint16_t us);
+static void DWT_Init(void);
+static void delay_us(uint32_t us);
 
 /* ── ADC helpers ────────────────────────────────────────────────────────────
  */
@@ -257,11 +272,12 @@ static float ADC_Read_Voltage(uint32_t channel);
 
 /* ── DS18B20 OneWire ────────────────────────────────────────────────────────
  */
-static void OW_SetOutput(void);
-static void OW_SetInput(void);
-static void OW_Write(uint8_t state);
-static uint8_t OW_Read(void);
+static void OW_Init(void);
+static inline void OW_Write(uint8_t state);
+static inline uint8_t OW_Read(void);
 static uint8_t OW_Reset(void);
+static void OW_WriteBit(uint8_t bit);
+static uint8_t OW_ReadBit(void);
 static void OW_WriteByte(uint8_t data);
 static uint8_t OW_ReadByte(void);
 static void DS18B20_SearchROM(void);
@@ -272,14 +288,13 @@ static float DS18B20_ReadTemp(uint8_t index);
  */
 static float DepthSensor_ReadDistance(void);
 
-/* ── BME280 ─────────────────────────────────────────────────────────────────
+/* ── BMP280 ─────────────────────────────────────────────────────────────────
  */
-static uint8_t BME280_Init(void);
-static void BME280_ReadCalibration(void);
-static void BME280_ReadAll(float *temp, float *press, float *hum);
-static int32_t BME280_CompensateTemp(int32_t adc_T);
-static uint32_t BME280_CompensatePress(int32_t adc_P);
-static uint32_t BME280_CompensateHum(int32_t adc_H);
+static uint8_t BMP280_Init(void);
+static void BMP280_ReadCalibration(void);
+static void BMP280_ReadAll(float *temp, float *press);
+static int32_t BMP280_CompensateTemp(int32_t adc_T);
+static uint32_t BMP280_CompensatePress(int32_t adc_P);
 
 /* ── Analog sensor conversions ──────────────────────────────────────────────
  */
@@ -297,7 +312,7 @@ static uint16_t WQM_BuildJSON(const WQM_SensorData_t *data, char *buf,
 
 /* ── Debug UART output ──────────────────────────────────────────────────────
  */
-static void Debug_Print(const char *str);
+void Debug_Print(const char *str);
 
 /* USER CODE END PFP */
 
@@ -306,13 +321,21 @@ static void Debug_Print(const char *str);
 
 /* ═══════════════════════════════════════════════════════════════════════════
  */
-/*                          MICROSECOND DELAY (TIM6)                         */
+/*                   MICROSECOND DELAY (Cortex-M7 DWT)                       */
 /* ═══════════════════════════════════════════════════════════════════════════
  */
 
-static void delay_us(uint16_t us) {
-  __HAL_TIM_SET_COUNTER(&htim6, 0);
-  while (__HAL_TIM_GET_COUNTER(&htim6) < us)
+static void DWT_Init(void) {
+  CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+  DWT->LAR = 0xC5ACCE55; /* Unlock DWT registers on Cortex-M7 */
+  DWT->CYCCNT = 0;
+  DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+}
+
+static void delay_us(uint32_t us) {
+  uint32_t start = DWT->CYCCNT;
+  uint32_t ticks = us * (SystemCoreClock / 1000000U);
+  while ((DWT->CYCCNT - start) < ticks)
     ;
 }
 
@@ -362,67 +385,68 @@ static float ADC_Read_Voltage(uint32_t channel) {
 /* ═══════════════════════════════════════════════════════════════════════════
  */
 
-static void OW_SetOutput(void) {
+static void OW_Init(void) {
   GPIO_InitTypeDef g = {0};
   g.Pin = OW_PIN;
-  g.Mode = GPIO_MODE_OUTPUT_PP;
-  g.Pull = GPIO_NOPULL;
+  g.Mode = GPIO_MODE_OUTPUT_OD;
+  g.Pull = GPIO_PULLUP;
   g.Speed = GPIO_SPEED_FREQ_HIGH;
   HAL_GPIO_Init(OW_PORT, &g);
+  OW_PORT->BSRR = OW_PIN; /* Release to float HIGH */
 }
 
-static void OW_SetInput(void) {
-  GPIO_InitTypeDef g = {0};
-  g.Pin = OW_PIN;
-  g.Mode = GPIO_MODE_INPUT;
-  g.Pull = GPIO_PULLUP;
-  HAL_GPIO_Init(OW_PORT, &g);
+static inline void OW_Write(uint8_t state) {
+  if (state) {
+    OW_PORT->BSRR = OW_PIN; /* Release (open-drain floating HIGH via pull-up) */
+  } else {
+    OW_PORT->BSRR = (uint32_t)OW_PIN << 16U; /* Drive LOW to GND */
+  }
 }
 
-static void OW_Write(uint8_t state) {
-  HAL_GPIO_WritePin(OW_PORT, OW_PIN, state ? GPIO_PIN_SET : GPIO_PIN_RESET);
-}
-
-static uint8_t OW_Read(void) { return HAL_GPIO_ReadPin(OW_PORT, OW_PIN); }
+static inline uint8_t OW_Read(void) { return (OW_PORT->IDR & OW_PIN) ? 1 : 0; }
 
 /**
  * @brief  OneWire reset pulse. Returns 1 if a device is present, 0 otherwise.
  */
 static uint8_t OW_Reset(void) {
-  uint8_t presence;
-  OW_SetOutput();
+  uint8_t presence = 0;
   OW_Write(0);
   delay_us(480);
-  OW_SetInput();
-  delay_us(70);
-  presence = !OW_Read(); /* LOW = device present */
-  delay_us(410);
+  OW_Write(1); /* Release bus */
+
+  /* Search for presence pulse (sensor pulls line LOW 15–60µs after release) */
+  for (int t = 0; t < 240; t += 10) {
+    delay_us(10);
+    if (OW_Read() == 0) {
+      presence = 1;
+    }
+  }
+  delay_us(240);
   return presence;
 }
 
 static void OW_WriteBit(uint8_t bit) {
-  OW_SetOutput();
-  OW_Write(0);
   if (bit) {
+    OW_Write(0);
     delay_us(6);
-    OW_SetInput();
+    OW_Write(1);
     delay_us(54);
   } else {
+    OW_Write(0);
     delay_us(60);
-    OW_SetInput();
+    OW_Write(1);
+    delay_us(10);
   }
-  delay_us(2);
 }
 
 static uint8_t OW_ReadBit(void) {
   uint8_t bit;
-  OW_SetOutput();
   OW_Write(0);
-  delay_us(2);
-  OW_SetInput();
-  delay_us(12);
+  delay_us(3);
+  OW_Write(1);
+  delay_us(10);
   bit = OW_Read();
-  delay_us(46);
+  delay_us(50);
   return bit;
 }
 
@@ -448,19 +472,43 @@ static uint8_t OW_ReadByte(void) {
  */
 static void DS18B20_SearchROM(void) {
   ds18b20_count = 0;
+  OW_Init();
+
+  /* Check initial bus idle voltage level */
+  uint8_t idle = OW_Read();
+  if (idle == 0) {
+    Debug_Print("[DS18B20] Pin PE6 reads LOW at idle (bus shorted to GND or no "
+                "pull-up resistor).\r\n");
+  } else {
+    Debug_Print("[DS18B20] Pin PE6 reads HIGH at idle (pull-up OK).\r\n");
+  }
 
   /* Try READ ROM first (works only with a single device) */
-  if (!OW_Reset())
+  if (!OW_Reset()) {
+    Debug_Print(
+        "[DS18B20] No presence pulse on PE6 (sensor not responding).\r\n");
     return;
+  }
+  Debug_Print("[DS18B20] Presence pulse detected!\r\n");
+
   OW_WriteByte(0x33); /* READ ROM command */
   for (int i = 0; i < 8; i++) {
     ds18b20_rom[0][i] = OW_ReadByte();
   }
 
+  char rom_diag[80];
+  snprintf(rom_diag, sizeof(rom_diag),
+           "[DS18B20] ROM: %02X %02X %02X %02X %02X %02X %02X %02X\r\n",
+           ds18b20_rom[0][0], ds18b20_rom[0][1], ds18b20_rom[0][2],
+           ds18b20_rom[0][3], ds18b20_rom[0][4], ds18b20_rom[0][5],
+           ds18b20_rom[0][6], ds18b20_rom[0][7]);
+  Debug_Print(rom_diag);
+
   /* Validate family code (0x28 = DS18B20) */
   if (ds18b20_rom[0][0] == 0x28) {
     ds18b20_count = 1;
   } else {
+    Debug_Print("[DS18B20] Warning: family code is not 0x28.\r\n");
     return; /* No valid device found */
   }
 
@@ -595,157 +643,196 @@ static float DepthSensor_ReadDistance(void) {
 
 /* ═══════════════════════════════════════════════════════════════════════════
  */
-/*                         BME280 — I2C DRIVER                               */
+/* ═══════════════════════════════════════════════════════════════════════════
+ */
+/*                         BMP280 — I2C DRIVER                               */
 /* ═══════════════════════════════════════════════════════════════════════════
  */
 
-static uint8_t BME280_ReadReg(uint8_t reg) {
+static uint8_t BMP280_ReadReg(uint8_t reg) {
   uint8_t val = 0;
-  HAL_I2C_Mem_Read(&hi2c1, BME280_ADDR, reg, I2C_MEMADD_SIZE_8BIT, &val, 1,
+  HAL_I2C_Mem_Read(&hi2c1, bmp280_i2c_addr, reg, I2C_MEMADD_SIZE_8BIT, &val, 1,
                    100);
   return val;
 }
 
-static void BME280_WriteReg(uint8_t reg, uint8_t val) {
-  HAL_I2C_Mem_Write(&hi2c1, BME280_ADDR, reg, I2C_MEMADD_SIZE_8BIT, &val, 1,
+static void BMP280_WriteReg(uint8_t reg, uint8_t val) {
+  HAL_I2C_Mem_Write(&hi2c1, bmp280_i2c_addr, reg, I2C_MEMADD_SIZE_8BIT, &val, 1,
                     100);
 }
 
-static void BME280_ReadBurst(uint8_t reg, uint8_t *buf, uint16_t len) {
-  HAL_I2C_Mem_Read(&hi2c1, BME280_ADDR, reg, I2C_MEMADD_SIZE_8BIT, buf, len,
-                   100);
+static HAL_StatusTypeDef BMP280_ReadBurst(uint8_t reg, uint8_t *buf,
+                                          uint16_t len) {
+  return HAL_I2C_Mem_Read(&hi2c1, bmp280_i2c_addr, reg, I2C_MEMADD_SIZE_8BIT,
+                          buf, len, 100);
 }
 
-static uint8_t BME280_Init(void) {
-  /* Verify chip ID */
-  uint8_t id = BME280_ReadReg(BME280_REG_ID);
-  if (id != BME280_CHIP_ID)
+static uint8_t BMP280_Init(void) {
+  const uint8_t candidate_addrs[2] = {BMP280_ADDR_PRIMARY,
+                                      BMP280_ADDR_SECONDARY};
+  uint8_t id = 0;
+  uint8_t found = 0;
+  char diag[128];
+
+  /* Allow GY-BMP280 module LDO regulator and bus pull-ups to stabilize */
+  HAL_Delay(100);
+
+  /* Probe both 0x76 and 0x77 addresses with retries */
+  for (int retry = 0; retry < 5 && !found; retry++) {
+    for (int i = 0; i < 2; i++) {
+      bmp280_i2c_addr = candidate_addrs[i];
+      if (HAL_I2C_IsDeviceReady(&hi2c1, bmp280_i2c_addr, 2, 50) == HAL_OK) {
+        id = BMP280_ReadReg(BMP280_REG_ID);
+        snprintf(diag, sizeof(diag),
+                 "[BMP280] ACK at 0x%02X, Reg 0xD0 ID = 0x%02X\r\n",
+                 bmp280_i2c_addr >> 1, id);
+        Debug_Print(diag);
+
+        if (id == BMP280_CHIP_ID || id == 0x56 || id == 0x57) {
+          found = 1;
+          break;
+        }
+      }
+    }
+    if (!found) {
+      HAL_Delay(20);
+    }
+  }
+
+  if (!found) {
+    bmp280_ok = 0;
     return 0;
+  }
 
-  /* Read factory calibration data */
-  BME280_ReadCalibration();
+  bmp280_ok = 1;
 
-  /* Configure: humidity oversampling ×1 (must be set before ctrl_meas) */
-  BME280_WriteReg(BME280_REG_CTRL_HUM, 0x01);
+  /* Soft reset sensor and wait for reboot */
+  BMP280_WriteReg(BMP280_REG_RESET, BMP280_RESET_CMD);
+  HAL_Delay(100);
 
-  /* Config: standby 1000ms, filter coeff 4 */
-  BME280_WriteReg(BME280_REG_CONFIG, 0xA0);
+  /* Wait until NVM trimming parameters finish copying to image registers */
+  uint8_t poll_count = 50;
+  while ((BMP280_ReadReg(BMP280_REG_STATUS) & 0x01) && --poll_count) {
+    HAL_Delay(10);
+  }
 
-  /* ctrl_meas: temp ×1, pressure ×1, normal mode */
-  BME280_WriteReg(BME280_REG_CTRL_MEAS, 0x27);
+  /* Read factory calibration data (24 bytes) */
+  BMP280_ReadCalibration();
+
+  /* Print diagnostic calibration coefficients */
+  {
+    char diag[128];
+    snprintf(diag, sizeof(diag),
+             "[BMP280] Calib: T1=%u T2=%d T3=%d | P1=%u P2=%d P3=%d\r\n",
+             bmp280_calib.dig_T1, bmp280_calib.dig_T2, bmp280_calib.dig_T3,
+             bmp280_calib.dig_P1, bmp280_calib.dig_P2, bmp280_calib.dig_P3);
+    Debug_Print(diag);
+  }
+
+  /* Config: standby 62.5ms, filter off */
+  BMP280_WriteReg(BMP280_REG_CONFIG, 0x20);
+
+  /* ctrl_meas: temp ×1, pressure ×1, normal mode (0x27) */
+  BMP280_WriteReg(BMP280_REG_CTRL_MEAS, 0x27);
+  HAL_Delay(50);
+
+  /* Verify ctrl_meas */
+  uint8_t ctrl_check = BMP280_ReadReg(BMP280_REG_CTRL_MEAS);
+  if ((ctrl_check & 0x03) == 0) {
+    /* If still in sleep, force normal mode */
+    BMP280_WriteReg(BMP280_REG_CTRL_MEAS, 0x27);
+  }
 
   return 1;
 }
 
-static void BME280_ReadCalibration(void) {
-  uint8_t buf[26];
-  BME280_ReadBurst(BME280_REG_CALIB_00, buf, 26);
+static void BMP280_ReadCalibration(void) {
+  uint8_t buf[24];
+  BMP280_ReadBurst(BMP280_REG_CALIB_00, buf, 24);
 
-  bme280_calib.dig_T1 = (uint16_t)(buf[1] << 8 | buf[0]);
-  bme280_calib.dig_T2 = (int16_t)(buf[3] << 8 | buf[2]);
-  bme280_calib.dig_T3 = (int16_t)(buf[5] << 8 | buf[4]);
-  bme280_calib.dig_P1 = (uint16_t)(buf[7] << 8 | buf[6]);
-  bme280_calib.dig_P2 = (int16_t)(buf[9] << 8 | buf[8]);
-  bme280_calib.dig_P3 = (int16_t)(buf[11] << 8 | buf[10]);
-  bme280_calib.dig_P4 = (int16_t)(buf[13] << 8 | buf[12]);
-  bme280_calib.dig_P5 = (int16_t)(buf[15] << 8 | buf[14]);
-  bme280_calib.dig_P6 = (int16_t)(buf[17] << 8 | buf[16]);
-  bme280_calib.dig_P7 = (int16_t)(buf[19] << 8 | buf[18]);
-  bme280_calib.dig_P8 = (int16_t)(buf[21] << 8 | buf[20]);
-  bme280_calib.dig_P9 = (int16_t)(buf[23] << 8 | buf[22]);
-  bme280_calib.dig_H1 = buf[25];
-
-  /* Humidity calib is at a different register block */
-  uint8_t hbuf[7];
-  BME280_ReadBurst(BME280_REG_CALIB_26, hbuf, 7);
-
-  bme280_calib.dig_H2 = (int16_t)(hbuf[1] << 8 | hbuf[0]);
-  bme280_calib.dig_H3 = hbuf[2];
-  bme280_calib.dig_H4 = (int16_t)((hbuf[3] << 4) | (hbuf[4] & 0x0F));
-  bme280_calib.dig_H5 = (int16_t)((hbuf[5] << 4) | (hbuf[4] >> 4));
-  bme280_calib.dig_H6 = (int8_t)hbuf[6];
+  bmp280_calib.dig_T1 = (uint16_t)(buf[1] << 8 | buf[0]);
+  bmp280_calib.dig_T2 = (int16_t)(buf[3] << 8 | buf[2]);
+  bmp280_calib.dig_T3 = (int16_t)(buf[5] << 8 | buf[4]);
+  bmp280_calib.dig_P1 = (uint16_t)(buf[7] << 8 | buf[6]);
+  bmp280_calib.dig_P2 = (int16_t)(buf[9] << 8 | buf[8]);
+  bmp280_calib.dig_P3 = (int16_t)(buf[11] << 8 | buf[10]);
+  bmp280_calib.dig_P4 = (int16_t)(buf[13] << 8 | buf[12]);
+  bmp280_calib.dig_P5 = (int16_t)(buf[15] << 8 | buf[14]);
+  bmp280_calib.dig_P6 = (int16_t)(buf[17] << 8 | buf[16]);
+  bmp280_calib.dig_P7 = (int16_t)(buf[19] << 8 | buf[18]);
+  bmp280_calib.dig_P8 = (int16_t)(buf[21] << 8 | buf[20]);
+  bmp280_calib.dig_P9 = (int16_t)(buf[23] << 8 | buf[22]);
 }
 
 /**
- * @brief  Bosch BME280 temperature compensation (returns °C × 100).
- *         Also sets bme280_t_fine for pressure/humidity compensation.
+ * @brief  Bosch BMP280 temperature compensation (returns °C × 100).
+ *         Sets bmp280_t_fine for pressure compensation.
  */
-static int32_t BME280_CompensateTemp(int32_t adc_T) {
+static int32_t BMP280_CompensateTemp(int32_t adc_T) {
   int32_t var1, var2, T;
-  var1 = ((((adc_T >> 3) - ((int32_t)bme280_calib.dig_T1 << 1))) *
-          ((int32_t)bme280_calib.dig_T2)) >>
+  var1 = ((((adc_T >> 3) - ((int32_t)bmp280_calib.dig_T1 << 1))) *
+          ((int32_t)bmp280_calib.dig_T2)) >>
          11;
-  var2 = (((((adc_T >> 4) - ((int32_t)bme280_calib.dig_T1)) *
-            ((adc_T >> 4) - ((int32_t)bme280_calib.dig_T1))) >>
+  var2 = (((((adc_T >> 4) - ((int32_t)bmp280_calib.dig_T1)) *
+            ((adc_T >> 4) - ((int32_t)bmp280_calib.dig_T1))) >>
            12) *
-          ((int32_t)bme280_calib.dig_T3)) >>
+          ((int32_t)bmp280_calib.dig_T3)) >>
          14;
-  bme280_t_fine = var1 + var2;
-  T = (bme280_t_fine * 5 + 128) >> 8;
+  bmp280_t_fine = var1 + var2;
+  T = (bmp280_t_fine * 5 + 128) >> 8;
   return T; /* °C × 100 */
 }
 
-static uint32_t BME280_CompensatePress(int32_t adc_P) {
+static uint32_t BMP280_CompensatePress(int32_t adc_P) {
   int64_t var1, var2, p;
-  var1 = ((int64_t)bme280_t_fine) - 128000;
-  var2 = var1 * var1 * (int64_t)bme280_calib.dig_P6;
-  var2 = var2 + ((var1 * (int64_t)bme280_calib.dig_P5) << 17);
-  var2 = var2 + (((int64_t)bme280_calib.dig_P4) << 35);
-  var1 = ((var1 * var1 * (int64_t)bme280_calib.dig_P3) >> 8) +
-         ((var1 * (int64_t)bme280_calib.dig_P2) << 12);
-  var1 = (((((int64_t)1) << 47) + var1)) * ((int64_t)bme280_calib.dig_P1) >> 33;
+  var1 = ((int64_t)bmp280_t_fine) - 128000;
+  var2 = var1 * var1 * (int64_t)bmp280_calib.dig_P6;
+  var2 = var2 + ((var1 * (int64_t)bmp280_calib.dig_P5) << 17);
+  var2 = var2 + (((int64_t)bmp280_calib.dig_P4) << 35);
+  var1 = ((var1 * var1 * (int64_t)bmp280_calib.dig_P3) >> 8) +
+         ((var1 * (int64_t)bmp280_calib.dig_P2) << 12);
+  var1 = (((((int64_t)1) << 47) + var1)) * ((int64_t)bmp280_calib.dig_P1) >> 33;
   if (var1 == 0)
     return 0;
   p = 1048576 - adc_P;
   p = (((p << 31) - var2) * 3125) / var1;
-  var1 = (((int64_t)bme280_calib.dig_P9) * (p >> 13) * (p >> 13)) >> 25;
-  var2 = (((int64_t)bme280_calib.dig_P8) * p) >> 19;
-  p = ((p + var1 + var2) >> 8) + (((int64_t)bme280_calib.dig_P7) << 4);
+  var1 = (((int64_t)bmp280_calib.dig_P9) * (p >> 13) * (p >> 13)) >> 25;
+  var2 = (((int64_t)bmp280_calib.dig_P8) * p) >> 19;
+  p = ((p + var1 + var2) >> 8) + (((int64_t)bmp280_calib.dig_P7) << 4);
   return (uint32_t)p; /* Pa × 256 */
 }
 
-static uint32_t BME280_CompensateHum(int32_t adc_H) {
-  int32_t v_x1_u32r;
-  v_x1_u32r = (bme280_t_fine - ((int32_t)76800));
-  v_x1_u32r = (((((adc_H << 14) - (((int32_t)bme280_calib.dig_H4) << 20) -
-                  (((int32_t)bme280_calib.dig_H5) * v_x1_u32r)) +
-                 ((int32_t)16384)) >>
-                15) *
-               (((((((v_x1_u32r * ((int32_t)bme280_calib.dig_H6)) >> 10) *
-                    (((v_x1_u32r * ((int32_t)bme280_calib.dig_H3)) >> 11) +
-                     ((int32_t)32768))) >>
-                   10) +
-                  ((int32_t)2097152)) *
-                     ((int32_t)bme280_calib.dig_H2) +
-                 8192) >>
-                14));
-  v_x1_u32r = (v_x1_u32r - (((((v_x1_u32r >> 15) * (v_x1_u32r >> 15)) >> 7) *
-                             ((int32_t)bme280_calib.dig_H1)) >>
-                            4));
-  v_x1_u32r = (v_x1_u32r < 0) ? 0 : v_x1_u32r;
-  v_x1_u32r = (v_x1_u32r > 419430400) ? 419430400 : v_x1_u32r;
-  return (uint32_t)(v_x1_u32r >> 12); /* %RH × 1024 */
-}
-
 /**
- * @brief  Read all BME280 data (temp, pressure, humidity) in a single burst.
+ * @brief  Read BMP280 data (temperature & barometric pressure).
  */
-static void BME280_ReadAll(float *temp, float *press, float *hum) {
-  uint8_t buf[8];
-  BME280_ReadBurst(BME280_REG_DATA, buf, 8);
+static void BMP280_ReadAll(float *temp, float *press) {
+  if (!bmp280_ok) {
+    *temp = 0.0f;
+    *press = 0.0f;
+    return;
+  }
+
+  uint8_t buf[6] = {0};
+  if (BMP280_ReadBurst(BMP280_REG_DATA, buf, 6) != HAL_OK) {
+    HAL_I2C_DeInit(&hi2c1);
+    MX_I2C1_Init();
+    return;
+  }
 
   int32_t adc_P = (int32_t)((buf[0] << 12) | (buf[1] << 4) | (buf[2] >> 4));
   int32_t adc_T = (int32_t)((buf[3] << 12) | (buf[4] << 4) | (buf[5] >> 4));
-  int32_t adc_H = (int32_t)((buf[6] << 8) | buf[7]);
 
-  /* Temperature MUST be calculated first (sets t_fine) */
-  int32_t t100 = BME280_CompensateTemp(adc_T);
-  uint32_t p256 = BME280_CompensatePress(adc_P);
-  uint32_t h1024 = BME280_CompensateHum(adc_H);
+  /* 0x80000 or 0 indicates measurement disabled or unready */
+  if (adc_T == 0x80000 || adc_T == 0) {
+    return;
+  }
+
+  /* Temperature MUST be calculated first (sets bmp280_t_fine) */
+  int32_t t100 = BMP280_CompensateTemp(adc_T);
+  uint32_t p256 = BMP280_CompensatePress(adc_P);
 
   *temp = (float)t100 / 100.0f;
   *press = (float)p256 / 256.0f / 100.0f; /* Pa → hPa */
-  *hum = (float)h1024 / 1024.0f;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -755,17 +842,35 @@ static void BME280_ReadAll(float *temp, float *press, float *hum) {
  */
 
 /**
- * @brief  Read pH value from SEN0161.
- *         Uses two-point calibration: pH = slope × voltage + offset
+ * @brief  Read pH from the robu.in Analog pH Sensor Kit.
+ *
+ *         Formula: pH = PH_SCALE × V_sensor + PH_OFFSET
+ *         where V_sensor is the reconstructed sensor output in volts
+ *         (ADC_Read_Voltage accounts for the 2:1 divider on PA3).
+ *
+ *         Calibration:
+ *          • Short the BNC connector → sensor should read ~pH 7.0
+ *            If reading ≠ 7.0, set PH_OFFSET = 7.0 − displayed_value.
+ *          • Dip in pH 4.00 buffer → verify reading ≈ 4.0 (confirms scale).
  */
 static float Sensor_ReadPH(void) {
-  float voltage = ADC_Read_Voltage(ADC_CHANNEL_3); /* PA3 */
-  float ph = PH_CAL_SLOPE * voltage + PH_CAL_OFFSET;
-  /* Clamp to valid pH range */
+  /* ADC_Read_Voltage reconstructs V_sensor = ADC × (3.3/4095) × 2 (divider) */
+  float v_sensor = ADC_Read_Voltage(ADC_CHANNEL_3); /* PA3 */
+
+  float ph = PH_SCALE * v_sensor + PH_OFFSET;
+
+  /* Clamp to physically valid pH range */
   if (ph < 0.0f)
     ph = 0.0f;
   if (ph > 14.0f)
     ph = 14.0f;
+
+  char ph_diag[96];
+  snprintf(ph_diag, sizeof(ph_diag),
+           "[pH] V_sensor=%.3fV  pH=%.2f  (scale=%.1f offset=%.2f)\r\n",
+           v_sensor, ph, PH_SCALE, PH_OFFSET);
+  Debug_Print(ph_diag);
+
   return ph;
 }
 
@@ -806,36 +911,62 @@ static float Sensor_ReadTDS(float water_temp) {
 }
 
 /**
- * @brief  Read dissolved oxygen from SEN0237-A with temperature and
- *         barometric pressure compensation.
- *         Uses DO_Table lookup + single-point voltage calibration.
+ * @brief  Read dissolved oxygen (Graylogix galvanic amperometric probe).
+ *
+ *         Method: single-point air calibration + temperature lookup table.
+ *
+ *         V_pin_mv  = raw ADC voltage at PA4 pin in millivolts
+ *                     (post-divider, same scale as DO_CAL1_V)
+ *         V_sat_mv  = DO_CAL1_V × DO_Table[T] / DO_Table[CAL_T]
+ *                     (saturation voltage scaled to current temperature)
+ *         DO (mg/L) = V_pin_mv × DO_Table[T] / V_sat_mv / 1000
+ *
+ *         Barometric correction: DO × (P_actual / 1013.25)
+ *
+ * @param  water_temp   Water temperature from DS18B20 (°C)
+ * @param  pressure_hpa Barometric pressure from BMP280 (hPa)
  */
 static float Sensor_ReadDO(float water_temp, float pressure_hpa) {
-  float voltage = ADC_Read_Voltage(ADC_CHANNEL_4); /* PA4 */
-  uint32_t voltage_mv = (uint32_t)(voltage * 1000.0f);
+  /*
+   * Read the raw ADC count and convert to mV at the ADC pin.
+   * We deliberately do NOT use ADC_Read_Voltage() (which applies ×2 for the
+   * divider) because DO_CAL1_V is also measured at the ADC pin — both sides
+   * of the ratio are on the same post-divider scale, so they cancel.
+   */
+  uint32_t raw = ADC_Read_Channel(ADC_CHANNEL_4); /* PA4 */
+  uint32_t v_pin_mv = (raw * 3300UL) / 4095UL;    /* mV at ADC pin */
 
-  /* Clamp temperature index to table bounds */
-  uint8_t temp_idx = (uint8_t)water_temp;
-  if (temp_idx > 40)
-    temp_idx = 40;
+  /* Clamp temperature index to lookup table bounds [0, 40] */
+  uint8_t t = (uint8_t)water_temp;
+  if (t > 40)
+    t = 40;
 
-  /* Calculate saturation voltage at current temperature (single-point cal) */
-  uint16_t v_saturation = (uint32_t)DO_CAL1_V +
-                          (uint32_t)DO_TEMP_COMP_MV * temp_idx -
-                          (uint32_t)DO_CAL1_T * DO_TEMP_COMP_MV;
+  /*
+   * Temperature-scaled saturation voltage.
+   * Formula: V_sat = CAL1_V × DO_Table[T] / DO_Table[CAL1_T]
+   * This accounts for the fact that the probe current (and thus output
+   * voltage) scales proportionally with oxygen solubility.
+   */
+  uint32_t v_sat_mv = ((uint32_t)DO_CAL1_V * (uint32_t)DO_Table[t]) /
+                      (uint32_t)DO_Table[DO_CAL1_T];
 
-  /* DO = (measured_mV × saturation_mgL) / saturation_mV */
   float do_val = 0.0f;
-  if (v_saturation > 0) {
-    do_val = (float)(voltage_mv * DO_Table[temp_idx]) / (float)v_saturation;
-    do_val /= 100.0f; /* DO_Table values are mg/L × 100 */
+  if (v_sat_mv > 0U) {
+    do_val =
+        ((float)v_pin_mv * (float)DO_Table[t]) / ((float)v_sat_mv * 1000.0f);
   }
 
-  /* Barometric pressure compensation: DO × (actual_pressure /
-   * standard_pressure) */
+  /* Barometric pressure compensation: DO × (P / P_std) */
   if (pressure_hpa > 0.0f) {
     do_val *= (pressure_hpa / 1013.25f);
   }
+
+  /* Diagnostic output */
+  char do_diag[96];
+  snprintf(do_diag, sizeof(do_diag),
+           "[DO] V_pin=%lumV V_sat=%lumV T=%d°C -> %.2f mg/L\r\n",
+           (unsigned long)v_pin_mv, (unsigned long)v_sat_mv, t, do_val);
+  Debug_Print(do_diag);
 
   if (do_val < 0.0f)
     do_val = 0.0f;
@@ -865,22 +996,23 @@ static float Sensor_ReadConductivity(float water_temp) {
 
 /**
  * @brief  Read ORP from SEN0165.
- *         Formula adapted from DFRobot sample code for 12-bit ADC.
- *         ORP_mV = ((30 × Vref × 1000) - (75 × ADC_avg × Vref × 1000 / 4096)) /
- * 75 - OFFSET
+ *         The SEN0165 signal board outputs a voltage centred around ~2.0V
+ *         (at 0 mV ORP).  The relationship is linear:
+ *           ORP_mV = (2.0 − V_board) × 1000
+ *         where V_board is the 0–5V output of the signal board, reconstructed
+ *         from the ADC reading through the 2:1 voltage divider.
+ *
+ *         This is the simplified form of DFRobot's original formula:
+ *           ((30 × 5 × 1000) − (75 × ADC × 5 × 1000 / 1024)) / 75
+ *         adapted for our 12-bit ADC + 3.3V VREF + 2:1 divider setup.
  */
 static float Sensor_ReadORP(void) {
-  uint32_t adc_raw = ADC_Read_Channel(ADC_CHANNEL_6); /* PA6 */
+  /* Reconstruct the actual sensor-board output voltage (0–5V range) */
+  float v_board =
+      ADC_Read_Voltage(ADC_CHANNEL_6); /* PA6, includes ×2 divider */
 
-  /* DFRobot ORP formula adapted for 12-bit ADC and 3.3V system with divider */
-  /* ORP: voltage represents millivolts offset from reference electrode */
-  /* The SEN0165 board output: ORP_mV ≈ (Vref/2 - Vout) × gain */
-  /* Simplified: map 0–5V board output to ±2000mV ORP range */
-  float orp_mv = ((30.0f * VREF * VDIV_SCALE * 1000.0f) -
-                  (75.0f * (float)adc_raw * VREF * VDIV_SCALE * 1000.0f /
-                   (ADC_RESOLUTION + 1.0f))) /
-                     75.0f -
-                 ORP_OFFSET;
+  /* DFRobot SEN0165: ORP_mV = (2.0V midpoint − board voltage) × 1000 */
+  float orp_mv = (2.0f - v_board) * 1000.0f - ORP_OFFSET;
 
   return orp_mv;
 }
@@ -915,7 +1047,6 @@ static uint16_t WQM_BuildJSON(const WQM_SensorData_t *data, char *buf,
       "\"temp_w2\":%.2f,"
       "\"depth_cm\":%.1f,"
       "\"temp_air\":%.2f,"
-      "\"humidity\":%.1f,"
       "\"pressure_hpa\":%.2f,"
       "\"lat\":%.6f,"
       "\"lon\":%.6f,"
@@ -931,9 +1062,9 @@ static uint16_t WQM_BuildJSON(const WQM_SensorData_t *data, char *buf,
       DEVICE_ID, (unsigned long)HAL_GetTick(), data->ph, data->turbidity_ntu,
       data->tds_ppm, data->do_mgl, data->ec_uscm, data->orp_mv,
       data->water_temp_1, data->water_temp_2, data->depth_cm, data->air_temp,
-      data->humidity, data->pressure_hpa, data->latitude, data->longitude,
-      data->altitude_m, data->speed_knots, data->course_deg, data->gps_fix,
-      data->satellites, data->heading, data->pitch, data->roll);
+      data->pressure_hpa, data->latitude, data->longitude, data->altitude_m,
+      data->speed_knots, data->course_deg, data->gps_fix, data->satellites,
+      data->heading, data->pitch, data->roll);
 
   return (uint16_t)((len > 0) ? len : 0);
 }
@@ -944,7 +1075,7 @@ static uint16_t WQM_BuildJSON(const WQM_SensorData_t *data, char *buf,
 /* ═══════════════════════════════════════════════════════════════════════════
  */
 
-static void Debug_Print(const char *str) {
+void Debug_Print(const char *str) {
   HAL_UART_Transmit(&huart3, (uint8_t *)str, strlen(str), 500);
 }
 
@@ -955,11 +1086,10 @@ static void Debug_Print(const char *str) {
 /* USER CODE END 0 */
 
 /**
-  * @brief  The application entry point.
-  * @retval int
-  */
-int main(void)
-{
+ * @brief  The application entry point.
+ * @retval int
+ */
+int main(void) {
 
   /* USER CODE BEGIN 1 */
 
@@ -970,7 +1100,8 @@ int main(void)
 
   /* MCU Configuration--------------------------------------------------------*/
 
-  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
+  /* Reset of all peripherals, Initializes the Flash interface and the Systick.
+   */
   HAL_Init();
 
   /* USER CODE BEGIN Init */
@@ -993,6 +1124,7 @@ int main(void)
   MX_TIM6_Init();
   MX_UART4_Init();
   /* USER CODE BEGIN 2 */
+  DWT_Init(); /* Enable ARM Cortex-M7 cycle counter for microsecond delays */
 
   /* ── Boot message ─────────────────────────────────────────────────────────
    */
@@ -1000,12 +1132,32 @@ int main(void)
   Debug_Print("  WQM Sensor Suite — NUCLEO-F722ZE\r\n");
   Debug_Print("========================================\r\n");
 
-  /* ── Initialize BME280 ────────────────────────────────────────────────────
+  /* ── I2C Bus Scanner ──────────────────────────────────────────────────────
    */
-  if (BME280_Init()) {
-    Debug_Print("[OK]  BME280 initialized (ID=0x60)\r\n");
+  Debug_Print("[I2C1] Scanning bus for devices...\r\n");
+  uint8_t i2c_devs = 0;
+  for (uint8_t addr = 0x08; addr <= 0x77; addr++) {
+    if (HAL_I2C_IsDeviceReady(&hi2c1, (uint16_t)(addr << 1), 2, 20) == HAL_OK) {
+      char scan_msg[48];
+      snprintf(scan_msg, sizeof(scan_msg), "[I2C1] ACK at 0x%02X\r\n", addr);
+      Debug_Print(scan_msg);
+      i2c_devs++;
+    }
+  }
+  if (i2c_devs == 0) {
+    Debug_Print("[I2C1] No devices found on bus!\r\n");
+  }
+
+  /* ── Initialize BMP280 ────────────────────────────────────────────────────
+   */
+  if (BMP280_Init()) {
+    char msg[64];
+    snprintf(msg, sizeof(msg),
+             "[OK]  BMP280 initialized (ID=0x%02X at 0x%02X)\r\n",
+             BMP280_CHIP_ID, bmp280_i2c_addr >> 1);
+    Debug_Print(msg);
   } else {
-    Debug_Print("[ERR] BME280 not found! Check I2C wiring.\r\n");
+    Debug_Print("[ERR] BMP280 not found! Check I2C wiring.\r\n");
   }
 
   /* ── Discover DS18B20 sensors ─────────────────────────────────────────────
@@ -1031,9 +1183,17 @@ int main(void)
   /* ── Initialize BNO085 ────────────────────────────────────────────────────
    */
   if (BNO085_Init(&hi2c1, BNO085_REPORT_INTERVAL_MS) == 0) {
-    Debug_Print("[OK]  BNO085 initialized.\r\n");
+    bno085_ok = 1;
+    char msg[64];
+    snprintf(msg, sizeof(msg), "[OK]  BNO085 initialized (at 0x%02X).\r\n",
+             bno085_i2c_addr >> 1);
+    Debug_Print(msg);
   } else {
+    bno085_ok = 0;
     Debug_Print("[ERR] BNO085 failed to initialize! Check I2C wiring.\r\n");
+    /* Reset I2C1 bus so NACK from absent BNO085 doesn't foul BMP280 reads */
+    HAL_I2C_DeInit(&hi2c1);
+    MX_I2C1_Init();
   }
 
   Debug_Print("========================================\r\n\r\n");
@@ -1046,31 +1206,36 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1) {
     sample_counter++;
+    uint32_t loop_start = HAL_GetTick();
 
     /* ═══════════════════════════════════════════════════════════════════════
      */
     /*  STOP-AND-SAMPLE SEQUENCE (per WQM_Sensor_Suite_Guide.md)              */
-    /*  1. BME280  2. DS18B20  3. Fast analog  4. ORP  5. pH  6. DO  7. Depth */
+    /*  1. BMP280  2. DS18B20  3. Fast analog  4. ORP  5. pH  6. DO  7. Depth */
     /* ═══════════════════════════════════════════════════════════════════════
      */
 
-    /* ── Step 1: Read BME280 (air temp, humidity, barometric pressure) ──── */
-    BME280_ReadAll(&sensor_data.air_temp, &sensor_data.pressure_hpa,
-                   &sensor_data.humidity);
+    /* ── Step 1: Read BMP280 (air temp, barometric pressure) ─────────────── */
+    BMP280_ReadAll(&sensor_data.air_temp, &sensor_data.pressure_hpa);
 
     /* ── Step 2: Start DS18B20 conversion and read temperatures ────────── */
     DS18B20_StartConvertAll();
-    HAL_Delay(750); /* 12-bit conversion takes up to 750ms */
-    sensor_data.water_temp_1 = DS18B20_ReadTemp(0);
-    sensor_data.water_temp_2 = DS18B20_ReadTemp(1);
+    /* Keep BNO085 FIFO drained during 750ms DS18B20 conversion */
+    uint32_t ds_start = HAL_GetTick();
+    while (HAL_GetTick() - ds_start < 750) {
+      if (bno085_ok) {
+        BNO085_Read(&hi2c1, &imu_orient);
+      }
+      HAL_Delay(50);
+    }
+    sensor_data.water_temp_1 =
+        DS18B20_ReadTemp(0);         /* Single sensor — index 0 */
+    sensor_data.water_temp_2 = 0.0f; /* Second sensor not used  */
 
-    /* Use primary temp for compensation; fallback to backup if primary fails */
+    /* Use primary temp for compensation; fall back to 25°C if probe fails */
     float comp_temp = sensor_data.water_temp_1;
     if (comp_temp < -50.0f || comp_temp > 125.0f) {
-      comp_temp = sensor_data.water_temp_2;
-    }
-    if (comp_temp < -50.0f || comp_temp > 125.0f) {
-      comp_temp = 25.0f; /* Last resort default */
+      comp_temp = 25.0f; /* Default if probe disconnected */
     }
 
     /* ── Step 3: Read fast analog sensors (conductivity, TDS, turbidity) ── */
@@ -1093,11 +1258,19 @@ int main(void)
     sensor_data.depth_cm = DepthSensor_ReadDistance();
 
     /* ── Step 8: Read IMU (BNO085) ───────────────────────────────────────── */
-    BNO085_Read(&hi2c1, &imu_orient);
-    if (imu_orient.valid) {
-      sensor_data.heading = imu_orient.yaw;
-      sensor_data.pitch = imu_orient.pitch;
-      sensor_data.roll = imu_orient.roll;
+    if (bno085_ok) {
+      BNO085_Read(&hi2c1, &imu_orient);
+      if (imu_orient.valid) {
+        sensor_data.heading = imu_orient.yaw;
+        sensor_data.pitch = imu_orient.pitch;
+        sensor_data.roll = imu_orient.roll;
+        char imu_diag[80];
+        snprintf(
+            imu_diag, sizeof(imu_diag),
+            "[BNO085] Yaw: %.1f deg | Pitch: %.1f deg | Roll: %.1f deg\r\n",
+            imu_orient.yaw, imu_orient.pitch, imu_orient.roll);
+        Debug_Print(imu_diag);
+      }
     }
 
     /* ── Step 9: Copy latest GPS data ───────────────────────────────────────
@@ -1125,8 +1298,14 @@ int main(void)
     /* Status LED blink — green LD1 on PB0 */
     HAL_GPIO_TogglePin(GPIOB, LD1_Pin);
 
-    /* Wait for next sample interval */
-    HAL_Delay(SAMPLE_INTERVAL_MS);
+    /* Wait for remainder of sample interval while keeping IMU serviced and FIFO
+     * drained */
+    while ((HAL_GetTick() - loop_start) < SAMPLE_INTERVAL_MS) {
+      if (bno085_ok) {
+        BNO085_Read(&hi2c1, &imu_orient);
+      }
+      HAL_Delay(20);
+    }
 
     /* USER CODE END WHILE */
 
@@ -1136,26 +1315,25 @@ int main(void)
 }
 
 /**
-  * @brief System Clock Configuration
-  * @retval None
-  */
-void SystemClock_Config(void)
-{
+ * @brief System Clock Configuration
+ * @retval None
+ */
+void SystemClock_Config(void) {
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
 
   /** Configure LSE Drive Capability
-  */
+   */
   HAL_PWR_EnableBkUpAccess();
 
   /** Configure the main internal regulator output voltage
-  */
+   */
   __HAL_RCC_PWR_CLK_ENABLE();
   __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
 
   /** Initializes the RCC Oscillators according to the specified parameters
-  * in the RCC_OscInitTypeDef structure.
-  */
+   * in the RCC_OscInitTypeDef structure.
+   */
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
   RCC_OscInitStruct.HSEState = RCC_HSE_BYPASS;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
@@ -1164,40 +1342,36 @@ void SystemClock_Config(void)
   RCC_OscInitStruct.PLL.PLLN = 216;
   RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
   RCC_OscInitStruct.PLL.PLLQ = 9;
-  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
-  {
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) {
     Error_Handler();
   }
 
   /** Activate the Over-Drive mode
-  */
-  if (HAL_PWREx_EnableOverDrive() != HAL_OK)
-  {
+   */
+  if (HAL_PWREx_EnableOverDrive() != HAL_OK) {
     Error_Handler();
   }
 
   /** Initializes the CPU, AHB and APB buses clocks
-  */
-  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
-                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
+   */
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK |
+                                RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV4;
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV2;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_7) != HAL_OK)
-  {
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_7) != HAL_OK) {
     Error_Handler();
   }
 }
 
 /**
-  * @brief ADC1 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_ADC1_Init(void)
-{
+ * @brief ADC1 Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_ADC1_Init(void) {
 
   /* USER CODE BEGIN ADC1_Init 0 */
 
@@ -1209,8 +1383,9 @@ static void MX_ADC1_Init(void)
 
   /* USER CODE END ADC1_Init 1 */
 
-  /** Configure the global features of the ADC (Clock, Resolution, Data Alignment and number of conversion)
-  */
+  /** Configure the global features of the ADC (Clock, Resolution, Data
+   * Alignment and number of conversion)
+   */
   hadc1.Instance = ADC1;
   hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
   hadc1.Init.Resolution = ADC_RESOLUTION_12B;
@@ -1223,33 +1398,30 @@ static void MX_ADC1_Init(void)
   hadc1.Init.NbrOfConversion = 1;
   hadc1.Init.DMAContinuousRequests = DISABLE;
   hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
-  if (HAL_ADC_Init(&hadc1) != HAL_OK)
-  {
+  if (HAL_ADC_Init(&hadc1) != HAL_OK) {
     Error_Handler();
   }
 
-  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
-  */
+  /** Configure for the selected ADC regular channel its corresponding rank in
+   * the sequencer and its sample time.
+   */
   sConfig.Channel = ADC_CHANNEL_3;
   sConfig.Rank = ADC_REGULAR_RANK_1;
   sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
-  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
-  {
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK) {
     Error_Handler();
   }
   /* USER CODE BEGIN ADC1_Init 2 */
 
   /* USER CODE END ADC1_Init 2 */
-
 }
 
 /**
-  * @brief I2C1 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_I2C1_Init(void)
-{
+ * @brief I2C1 Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_I2C1_Init(void) {
 
   /* USER CODE BEGIN I2C1_Init 0 */
 
@@ -1267,37 +1439,32 @@ static void MX_I2C1_Init(void)
   hi2c1.Init.OwnAddress2Masks = I2C_OA2_NOMASK;
   hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
   hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
-  if (HAL_I2C_Init(&hi2c1) != HAL_OK)
-  {
+  if (HAL_I2C_Init(&hi2c1) != HAL_OK) {
     Error_Handler();
   }
 
   /** Configure Analogue filter
-  */
-  if (HAL_I2CEx_ConfigAnalogFilter(&hi2c1, I2C_ANALOGFILTER_ENABLE) != HAL_OK)
-  {
+   */
+  if (HAL_I2CEx_ConfigAnalogFilter(&hi2c1, I2C_ANALOGFILTER_ENABLE) != HAL_OK) {
     Error_Handler();
   }
 
   /** Configure Digital filter
-  */
-  if (HAL_I2CEx_ConfigDigitalFilter(&hi2c1, 0) != HAL_OK)
-  {
+   */
+  if (HAL_I2CEx_ConfigDigitalFilter(&hi2c1, 0) != HAL_OK) {
     Error_Handler();
   }
   /* USER CODE BEGIN I2C1_Init 2 */
 
   /* USER CODE END I2C1_Init 2 */
-
 }
 
 /**
-  * @brief TIM6 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_TIM6_Init(void)
-{
+ * @brief TIM6 Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_TIM6_Init(void) {
 
   /* USER CODE BEGIN TIM6_Init 0 */
 
@@ -1313,55 +1480,18 @@ static void MX_TIM6_Init(void)
   htim6.Init.CounterMode = TIM_COUNTERMODE_UP;
   htim6.Init.Period = 65535;
   htim6.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-  if (HAL_TIM_Base_Init(&htim6) != HAL_OK)
-  {
+  if (HAL_TIM_Base_Init(&htim6) != HAL_OK) {
     Error_Handler();
   }
   sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
   sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
-  if (HAL_TIMEx_MasterConfigSynchronization(&htim6, &sMasterConfig) != HAL_OK)
-  {
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim6, &sMasterConfig) != HAL_OK) {
     Error_Handler();
   }
   /* USER CODE BEGIN TIM6_Init 2 */
-  HAL_TIM_Base_Start(&htim6); /* Start free-running counter for delay_us() */
+  __HAL_TIM_SET_PRESCALER(&htim6, 107);
+  HAL_TIM_Base_Start(&htim6); /* Start free-running counter */
   /* USER CODE END TIM6_Init 2 */
-
-}
-
-/**
-  * @brief UART4 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_UART4_Init(void)
-{
-
-  /* USER CODE BEGIN UART4_Init 0 */
-
-  /* USER CODE END UART4_Init 0 */
-
-  /* USER CODE BEGIN UART4_Init 1 */
-
-  /* USER CODE END UART4_Init 1 */
-  huart4.Instance = UART4;
-  huart4.Init.BaudRate = 96000;
-  huart4.Init.WordLength = UART_WORDLENGTH_8B;
-  huart4.Init.StopBits = UART_STOPBITS_1;
-  huart4.Init.Parity = UART_PARITY_NONE;
-  huart4.Init.Mode = UART_MODE_TX_RX;
-  huart4.Init.HwFlowCtl = UART_HWCONTROL_NONE;
-  huart4.Init.OverSampling = UART_OVERSAMPLING_16;
-  huart4.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
-  huart4.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
-  if (HAL_UART_Init(&huart4) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN UART4_Init 2 */
-
-  /* USER CODE END UART4_Init 2 */
-
 }
 
 /**
@@ -1379,7 +1509,7 @@ static void MX_UART4_Init(void) {
 
   /* USER CODE END UART4_Init 1 */
   huart4.Instance = UART4;
-  huart4.Init.BaudRate = 96000;
+  huart4.Init.BaudRate = 115200;
   huart4.Init.WordLength = UART_WORDLENGTH_8B;
   huart4.Init.StopBits = UART_STOPBITS_1;
   huart4.Init.Parity = UART_PARITY_NONE;
@@ -1397,12 +1527,11 @@ static void MX_UART4_Init(void) {
 }
 
 /**
-  * @brief USART3 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_USART3_UART_Init(void)
-{
+ * @brief USART3 Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_USART3_UART_Init(void) {
 
   /* USER CODE BEGIN USART3_Init 0 */
 
@@ -1421,23 +1550,20 @@ static void MX_USART3_UART_Init(void)
   huart3.Init.OverSampling = UART_OVERSAMPLING_16;
   huart3.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
   huart3.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
-  if (HAL_UART_Init(&huart3) != HAL_OK)
-  {
+  if (HAL_UART_Init(&huart3) != HAL_OK) {
     Error_Handler();
   }
   /* USER CODE BEGIN USART3_Init 2 */
 
   /* USER CODE END USART3_Init 2 */
-
 }
 
 /**
-  * @brief USB_OTG_FS Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_USB_OTG_FS_PCD_Init(void)
-{
+ * @brief USB_OTG_FS Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_USB_OTG_FS_PCD_Init(void) {
 
   /* USER CODE BEGIN USB_OTG_FS_Init 0 */
 
@@ -1457,23 +1583,20 @@ static void MX_USB_OTG_FS_PCD_Init(void)
   hpcd_USB_OTG_FS.Init.battery_charging_enable = ENABLE;
   hpcd_USB_OTG_FS.Init.vbus_sensing_enable = ENABLE;
   hpcd_USB_OTG_FS.Init.use_dedicated_ep1 = DISABLE;
-  if (HAL_PCD_Init(&hpcd_USB_OTG_FS) != HAL_OK)
-  {
+  if (HAL_PCD_Init(&hpcd_USB_OTG_FS) != HAL_OK) {
     Error_Handler();
   }
   /* USER CODE BEGIN USB_OTG_FS_Init 2 */
 
   /* USER CODE END USB_OTG_FS_Init 2 */
-
 }
 
 /**
-  * @brief GPIO Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_GPIO_Init(void)
-{
+ * @brief GPIO Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_GPIO_Init(void) {
   GPIO_InitTypeDef GPIO_InitStruct = {0};
   /* USER CODE BEGIN MX_GPIO_Init_1 */
 
@@ -1489,22 +1612,24 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOG_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, LD1_Pin|LD3_Pin|LD2_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOE, DS18B20_DQ_Pin | DS18B20_DQE6_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(USB_PowerSwitchOn_GPIO_Port, USB_PowerSwitchOn_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, LD1_Pin | LD3_Pin | LD2_Pin, GPIO_PIN_RESET);
 
-  /*Configure GPIO pin : PE4 */
-  GPIO_InitStruct.Pin = GPIO_PIN_4;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(USB_PowerSwitchOn_GPIO_Port, USB_PowerSwitchOn_Pin,
+                    GPIO_PIN_RESET);
+
+  /*Configure GPIO pins : DS18B20_DQ_Pin DS18B20_DQE6_Pin */
+  GPIO_InitStruct.Pin = DS18B20_DQ_Pin | DS18B20_DQE6_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_OD;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
   HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : PE5 PE6 */
-  GPIO_InitStruct.Pin = GPIO_PIN_5|GPIO_PIN_6;
-  /*Configure GPIO pin : PE6 */
-  GPIO_InitStruct.Pin = GPIO_PIN_6;
+  /*Configure GPIO pin : PE5 */
+  GPIO_InitStruct.Pin = GPIO_PIN_5;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
@@ -1516,7 +1641,7 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_Init(USER_Btn_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pins : LD1_Pin LD3_Pin LD2_Pin */
-  GPIO_InitStruct.Pin = LD1_Pin|LD3_Pin|LD2_Pin;
+  GPIO_InitStruct.Pin = LD1_Pin | LD3_Pin | LD2_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -1534,6 +1659,14 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(USB_OverCurrent_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : PC6 PC7 */
+  GPIO_InitStruct.Pin = GPIO_PIN_6 | GPIO_PIN_7;
+  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+  GPIO_InitStruct.Alternate = GPIO_AF8_USART6;
+  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
@@ -1554,17 +1687,16 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
 
 /* USER CODE END 4 */
 
- /* MPU Configuration */
+/* MPU Configuration */
 
-void MPU_Config(void)
-{
+void MPU_Config(void) {
   MPU_Region_InitTypeDef MPU_InitStruct = {0};
 
   /* Disables the MPU */
   HAL_MPU_Disable();
 
   /** Initializes and configures the Region and the memory to be protected
-  */
+   */
   MPU_InitStruct.Enable = MPU_REGION_ENABLE;
   MPU_InitStruct.Number = MPU_REGION_NUMBER0;
   MPU_InitStruct.BaseAddress = 0x0;
@@ -1580,15 +1712,13 @@ void MPU_Config(void)
   HAL_MPU_ConfigRegion(&MPU_InitStruct);
   /* Enables the MPU */
   HAL_MPU_Enable(MPU_PRIVILEGED_DEFAULT);
-
 }
 
 /**
-  * @brief  This function is executed in case of error occurrence.
-  * @retval None
-  */
-void Error_Handler(void)
-{
+ * @brief  This function is executed in case of error occurrence.
+ * @retval None
+ */
+void Error_Handler(void) {
   /* USER CODE BEGIN Error_Handler_Debug */
   /* User can add his own implementation to report the HAL error return state */
   __disable_irq();
@@ -1598,14 +1728,13 @@ void Error_Handler(void)
 }
 #ifdef USE_FULL_ASSERT
 /**
-  * @brief  Reports the name of the source file and the source line number
-  *         where the assert_param error has occurred.
-  * @param  file: pointer to the source file name
-  * @param  line: assert_param error line source number
-  * @retval None
-  */
-void assert_failed(uint8_t *file, uint32_t line)
-{
+ * @brief  Reports the name of the source file and the source line number
+ *         where the assert_param error has occurred.
+ * @param  file: pointer to the source file name
+ * @param  line: assert_param error line source number
+ * @retval None
+ */
+void assert_failed(uint8_t *file, uint32_t line) {
   /* USER CODE BEGIN 6 */
   /* User can add his own implementation to report the file name and line
      number, ex: printf("Wrong parameters value: file %s on line %d\r\n", file,

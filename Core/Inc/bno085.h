@@ -3,11 +3,12 @@
  * @file    bno085.h
  * @brief   BNO085 9-DOF IMU driver (I2C mode) for STM32 HAL.
  *
- *          SmartElex 9-DOF Orientation IMU Fusion Breakout — BNO085
+ *          DFRobot Gravity 9-DOF Orientation IMU Fusion Breakout — BNO085
  *          Uses Hillcrest SH-2 protocol over I2C to retrieve fused
  *          orientation data (rotation vector → Euler angles + heading).
  *
- * @note    Shares I2C1 bus with BME280 (0x76). BNO085 at 0x4A.
+ * @note    Shares I2C1 bus with BME280 (0x76). BNO085 at 0x4A (default DI pin
+ * LOW).
  ******************************************************************************
  */
 
@@ -28,20 +29,23 @@ extern "C" {
  * @brief  Fused orientation data from BNO085 ARVR-stabilised rotation vector.
  */
 typedef struct {
-  float yaw;       /**< Heading / yaw   in degrees (0–360, north = 0)   */
-  float pitch;     /**< Pitch           in degrees (-90 to +90)         */
-  float roll;      /**< Roll            in degrees (-180 to +180)       */
-  float accuracy;  /**< Heading accuracy estimate in radians            */
-  uint8_t valid;   /**< 1 = data is fresh / sensor responding, 0 = stale */
+  float yaw;      /**< Heading / yaw   in degrees (0–360, north = 0)   */
+  float pitch;    /**< Pitch           in degrees (-90 to +90)         */
+  float roll;     /**< Roll            in degrees (-180 to +180)       */
+  float accuracy; /**< Heading accuracy estimate in radians            */
+  uint8_t valid;  /**< 1 = data is fresh / sensor responding, 0 = stale */
 } BNO085_Orientation_t;
 
 /* Exported constants --------------------------------------------------------*/
 
 /** I2C 7-bit address left-shifted for HAL (SA0 = LOW → 0x4A) */
-#define BNO085_I2C_ADDR         (0x4A << 1)
+#define BNO085_I2C_ADDR (0x4A << 1)
 
 /** Alternative address when SA0 = HIGH */
-#define BNO085_I2C_ADDR_ALT     (0x4B << 1)
+#define BNO085_I2C_ADDR_ALT (0x4B << 1)
+
+/** Active I2C address determined during Init */
+extern uint8_t bno085_i2c_addr;
 
 /* Exported functions --------------------------------------------------------*/
 

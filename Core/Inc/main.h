@@ -53,10 +53,14 @@ extern "C" {
 void Error_Handler(void);
 
 /* USER CODE BEGIN EFP */
-
+void Debug_Print(const char *str);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
+#define DS18B20_DQ_Pin GPIO_PIN_4
+#define DS18B20_DQ_GPIO_Port GPIOE
+#define DS18B20_DQE6_Pin GPIO_PIN_6
+#define DS18B20_DQE6_GPIO_Port GPIOE
 #define USER_Btn_Pin GPIO_PIN_13
 #define USER_Btn_GPIO_Port GPIOC
 #define MCO_Pin GPIO_PIN_0

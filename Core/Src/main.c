@@ -125,10 +125,10 @@ typedef struct {
 /* ── DO sensor (SEN0237-A) calibration ──────────────────────────────────────
  */
 #define DO_CAL1_V                                                              \
-  1320 /* Calibration voltage (mV): measured 1.32V in air at 25°C             \
-          (sensor output ÷ 2 voltage-divider, reconstructed by VDIV_SCALE) */
-#define DO_CAL1_T 25       /* Calibration temperature (°C)         */
-#define DO_TEMP_COMP_MV 35 /* ~35 mV per °C compensation           */
+  764 /* Calibration voltage (mV): measured at PA4 (post-divider) in moist air \
+       * at DO_CAL1_T (matches 1.54V sensor board output ÷ 2). */
+#define DO_CAL1_T 24          /* Calibration temperature (°C)                  */
+#define DO_TEMP_COMP_MV 17.5f /* ~35 mV/°C at board ÷ 2 for voltage divider   */
 
 /* ── ORP sensor (SEN0165) ───────────────────────────────────────────────────
  */
@@ -326,7 +326,7 @@ static uint32_t ADC_Read_Channel(uint32_t channel) {
   ADC_ChannelConfTypeDef sConfig = {0};
   sConfig.Channel = channel;
   sConfig.Rank = ADC_REGULAR_RANK_1;
-  sConfig.SamplingTime = ADC_SAMPLETIME_56CYCLES;
+  sConfig.SamplingTime = ADC_SAMPLETIME_480CYCLES; /* 480 cycles for maximum impedance settling */
   HAL_ADC_ConfigChannel(&hadc1, &sConfig);
 
   uint32_t sum = 0;
@@ -862,30 +862,32 @@ static float Sensor_ReadDO(float water_temp, float pressure_hpa) {
     t = 40;
 
   /*
-   * Temperature-scaled saturation voltage.
-   * Formula: V_sat = CAL1_V × DO_Table[T] / DO_Table[CAL1_T]
-   * This accounts for the fact that the probe current (and thus output
-   * voltage) scales proportionally with oxygen solubility.
+   * Temperature-compensated saturation voltage (DFRobot / Graylogix formula):
+   * V_sat(T) = DO_CAL1_V + DO_TEMP_COMP_MV * (T - DO_CAL1_T)
+   * Probe membrane permeability increases ~35 mV/°C at sensor output,
+   * which corresponds to ~17.5 mV/°C at PA4 post-divider.
    */
-  uint32_t v_sat_mv = ((uint32_t)DO_CAL1_V * (uint32_t)DO_Table[t]) /
-                      (uint32_t)DO_Table[DO_CAL1_T];
+  float v_sat_mv = (float)DO_CAL1_V + (float)DO_TEMP_COMP_MV * ((float)t - (float)DO_CAL1_T);
+  if (v_sat_mv < 100.0f) {
+    v_sat_mv = 100.0f; /* Safety clamp to prevent division by zero */
+  }
 
   float do_val = 0.0f;
-  if (v_sat_mv > 0U) {
+  if (v_sat_mv > 0.0f) {
     do_val =
-        ((float)v_pin_mv * (float)DO_Table[t]) / ((float)v_sat_mv * 1000.0f);
+        ((float)v_pin_mv * (float)DO_Table[t]) / (v_sat_mv * 1000.0f);
   }
 
   /* Barometric pressure compensation: DO × (P / P_std) */
-  if (pressure_hpa > 0.0f) {
+  if (pressure_hpa > 300.0f && pressure_hpa < 1200.0f) {
     do_val *= (pressure_hpa / 1013.25f);
   }
 
   /* Diagnostic output */
   char do_diag[96];
   snprintf(do_diag, sizeof(do_diag),
-           "[DO] V_pin=%lumV V_sat=%lumV T=%d°C -> %.2f mg/L\r\n",
-           (unsigned long)v_pin_mv, (unsigned long)v_sat_mv, t, do_val);
+           "[DO] V_pin=%lumV V_sat=%.0fmV T=%d°C -> %.2f mg/L\r\n",
+           (unsigned long)v_pin_mv, v_sat_mv, t, do_val);
   Debug_Print(do_diag);
 
   if (do_val < 0.0f)
@@ -908,9 +910,25 @@ static float Sensor_ReadDO(float water_temp, float pressure_hpa) {
  *         adapted for our 12-bit ADC + 3.3V VREF + 2:1 divider setup.
  */
 static float Sensor_ReadORP(void) {
-  /* Reconstruct the actual sensor-board output voltage (0–5V range) */
-  float v_board =
-      ADC_Read_Voltage(ADC_CHANNEL_13); /* PC3, includes ×2 divider */
+  /*
+   * DFRobot SEN0165 uses a trimmed-mean over multiple samples to reject
+   * transient noise and 50/60 Hz mains ripple on high-impedance ORP probes.
+   * We sample 20 readings spaced 5ms apart, drop min & max, and average.
+   */
+  #define ORP_FILTER_SAMPLES 20
+  float samples[ORP_FILTER_SAMPLES];
+  float min_v = 10.0f, max_v = -10.0f, sum = 0.0f;
+
+  for (int i = 0; i < ORP_FILTER_SAMPLES; i++) {
+    samples[i] = ADC_Read_Voltage(ADC_CHANNEL_13); /* PC3, includes ×2 divider */
+    if (samples[i] < min_v) min_v = samples[i];
+    if (samples[i] > max_v) max_v = samples[i];
+    sum += samples[i];
+    HAL_Delay(5); /* 5ms spacing to span multiple 50Hz/60Hz AC mains cycles */
+  }
+
+  /* Discard highest and lowest outlier samples (trimmed mean) */
+  float v_board = (sum - min_v - max_v) / (float)(ORP_FILTER_SAMPLES - 2);
 
   /* DFRobot SEN0165: ORP_mV = (2.0V midpoint − board voltage) × 1000 */
   float orp_mv = (2.0f - v_board) * 1000.0f - ORP_OFFSET;

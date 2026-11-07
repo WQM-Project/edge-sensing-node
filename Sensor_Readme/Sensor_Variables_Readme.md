@@ -17,36 +17,41 @@ Turbidity (water cloudiness) is calculated from the voltage drop across an optic
 * **`TURB_COEFF_B (5742.3f)`**: The linear coefficient.
 * **`TURB_COEFF_C (-4352.9f)`**: The constant/intercept coefficient.
 
-## TDS Sensor (SEN0244)
+## TDS Sensor (SEN0244) — Connected to PA5 (ADC_CH5)
 
-Total Dissolved Solids (TDS) is also calculated using a polynomial curve fit against the measured analog voltage, factoring in a generic multiplier.
+Total Dissolved Solids (TDS) is calculated using a polynomial curve fit against the measured temperature-compensated voltage (post 2:1 divider), factoring in an empirical conversion factor.
 
 * **`TDS_COEFF_A (133.42f)`**, **`TDS_COEFF_B (-255.86f)`**, **`TDS_COEFF_C (857.39f)`**: The polynomial coefficients for translating the temperature-compensated voltage curve into a TDS value.
 * **`TDS_FACTOR (0.5f)`**: An approximate empirical conversion factor used to relate electrical conductivity to TDS (specifically for sodium chloride solutions).
+* **`TDS_TEMP_COEFF (0.02f)`**: Temperature coefficient (2% per °C) normalizing to 25°C baseline.
 
-## DO (Dissolved Oxygen) Sensor (SEN0237-A)
+## DO (Dissolved Oxygen) Sensor (SEN0237-A) — Connected to PA4 (ADC_CH4)
 
-Dissolved oxygen measurements are highly dependent on temperature. These variables support single-point calibration and temperature compensation.
+Dissolved oxygen measurements use a Galvanic amperometric probe with 7.5% KCl electrolyte and single-point air saturation calibration + temperature lookup table (`DO_Table[41]`).
 
-* **`DO_CAL1_V (1600)`**: The baseline analog voltage (in millivolts) read from the sensor when submerged in 100% air-saturated water during calibration.
-* **`DO_CAL1_T (25)`**: The temperature (in °C) at which the calibration `DO_CAL1_V` was recorded.
-* **`DO_TEMP_COMP_MV (35)`**: The estimated voltage drift (in mV) per degree Celsius, used to correct the DO reading as water temperature fluctuates.
+* **`DO_CAL1_V (764)`**: The baseline analog voltage (in millivolts) measured at the STM32 ADC pin PA4 (post 2:1 divider, corresponding to 1.54V sensor board output) when the wetted probe is equilibrated in open air at `DO_CAL1_T`.
+* **`DO_CAL1_T (24)`**: The ambient temperature (in °C) during air calibration.
+* **`DO_TEMP_COMP_MV (17.5f)`**: Voltage drift per degree Celsius post-divider (~35 mV/°C at sensor board output), compensating for membrane permeability changes: $V_{\text{sat}}(T) = \text{DO\_CAL1\_V} + 17.5 \times (T - \text{DO\_CAL1\_T})$.
+* **Barometric Pressure Compensation**: Corrected via live BMP280 barometric reading: $\text{DO} \times (P_{\text{actual}} / 1013.25\text{ hPa})$.
 
-## Electrical Conductivity (EC) Sensor (DFR0300)
+## ORP Sensor (SEN0165) — Connected to PC3 (ADC_CH13)
 
-* **`EC_K_CAL (1.0f)`**: The cell constant (K-factor) calibration multiplier. This is adjusted based on testing against a known standard EC solution (e.g., 1413 µS/cm).
-* **`EC_TEMP_COEFF (0.02f)`**: The temperature compensation coefficient (2% per °C), which normalizes the EC reading to a standard 25°C baseline.
+The SEN0165 signal conditioning board outputs an analog voltage referenced to a 2.0V midpoint ($0\text{ mV} \leftrightarrow 2.0\text{ V}$).
 
-## ORP Sensor (SEN0165)
+* **`ORP_OFFSET (0.0f)`**: Calibration offset applied to the linear calculation: $\text{ORP}_{\text{mV}} = (2.0 - V_{\text{board}}) \times 1000 - \text{ORP\_OFFSET}$.
+* **Filtering**: Uses 480 ADC sampling cycles and a 20-sample trimmed mean (rejecting highest and lowest outliers over 100 ms) to suppress high-impedance probe noise.
 
-* **`ORP_OFFSET (0.0f)`**: A flat millivolt offset applied to the Oxidation-Reduction Potential reading to account for minor hardware biases or probe aging.
+## DS18B20 Digital Temperature Sensor — Connected to PE6
 
-## DS18B20 Digital Temperature Sensor
-
-This sensor communicates over the 1-Wire protocol.
+This sensor communicates over the 1-Wire protocol with an external 4.7kΩ pull-up to 3.3V.
 
 * **`OW_PORT (GPIOE)`** & **`OW_PIN (GPIO_PIN_6)`**: The hardware GPIO pin assigned to the 1-Wire data bus.
 * **Command Codes** (`0xCC`, `0x55`, `0xF0`, `0x44`, `0xBE`): Standard 1-Wire hex commands used by the driver to skip ROM addressing, search for devices, trigger temperature conversions, and read the internal scratchpad memory.
+
+## Atmospheric Sensor (BMP280) — Connected to I2C1 (PB8/PB9)
+
+* **`BMP280_ADDR_PRIMARY (0xEC)`** / **`0x76`**: I2C address with SDO grounded.
+* Measures ambient air temperature and barometric pressure for dissolved oxygen altitude compensation.
 
 ## IP68 Underwater Ultrasonic Obstacle Avoidance Sensor (6 m, UART)
 

@@ -556,7 +556,7 @@ DO (mg/L)   = (voltage_mv × DO_Table[temp]) / V_saturation / 1000.0
 
 ---
 
-## 10. ORP Sensor (SEN0165 — ADC Channel 6)
+## 10. ORP Sensor (SEN0165 — ADC Channel 13 / PC3)
 
 ### How the SEN0165 Works & Why Readings Were in the 900s
 
@@ -737,12 +737,12 @@ NUCLEO CN7 (Morpho Left)                NUCLEO CN10 (Morpho Right)
 │ Pin 20 GND  → Sensor GND │              │                         │
 └─────────────────────────┘              └─────────────────────────┘
 
-NUCLEO CN8 (Arduino Left)               NUCLEO CN9 (Arduino Right)
+NUCLEO CN8 (Arduino Left)               NUCLEO CN9 / Headers
 ┌─────────────────────────┐              ┌─────────────────────────┐
-│ Pin 1  PA3  → pH ADC     │              │                         │
+│ Pin 1  PA3  → pH ADC     │              │ PC3  → ORP ADC (CH13)   │
 │ Pin 3  PA4  → DO ADC     │              │                         │
-│ Pin 5  PA5  → EC ADC     │              │                         │
-│ Pin 7  PA6  → ORP ADC    │              │                         │
+│ Pin 5  PA5  → TDS ADC    │              │                         │
+│ Pin 7  PC0  → Turbidity  │              │                         │
 │ Pin 9  5V   → Sensor VCC │              │                         │
 │ Pin 11 GND  → Sensor GND │              │                         │
 └─────────────────────────┘              └─────────────────────────┘

@@ -28,13 +28,14 @@ This repo contains the firmware for the **edge sensing node**: a NUCLEO-F722ZE b
 |---|---|---|---|---|---|
 | pH | DFRobot SEN0161 | Analog | PA3 (ADC\_CH3) | Water pH | 0–14 |
 | Turbidity | DFRobot SEN0189 | Analog | PC0 (ADC\_CH10) | Turbidity | NTU |
-| TDS | Gravity SEN0244 | Analog | PC3 (ADC\_CH13) | Total Dissolved Solids | ppm |
+| TDS | Gravity SEN0244 | Analog | PA5 (ADC\_CH5) | Total Dissolved Solids | ppm |
 | DO | DFRobot SEN0237-A | Analog | PA4 (ADC\_CH4) | Dissolved Oxygen | mg/L |
-| Conductivity | DFRobot DFR0300 | Analog | PA5 (ADC\_CH5) | Electrical Conductivity | µS/cm |
-| ORP | DFRobot SEN0165 | Analog | PA6 (ADC\_CH6) | Oxidation-Reduction Potential | mV |
+| ORP | DFRobot SEN0165 | Analog | PC3 (ADC\_CH13) | Oxidation-Reduction Potential | mV |
 | Temperature (×2) | DS18B20 | OneWire | PE6 | Water Temperature | °C |
 | Depth | IP68 Underwater Ultrasonic Obstacle Avoidance Sensor (6 m) | UART | USART3 RX (PD9) | Water Level | cm |
-| Atmospheric | BME280 | I2C1 | PB8/PB9 | Air Temp, Humidity, Pressure | °C, %, hPa |
+| Atmospheric | BMP280 | I2C1 | PB8/PB9 | Air Temp, Pressure | °C, hPa |
+| Navigation / IMU | BNO085 | I2C1 | PB8/PB9 | Orientation (heading, pitch, roll) | ° |
+| Location | NEO-M8N / NEO-6M | UART | UART4 (PC10/PC11) | GPS Navigation & Coordinates | — |
 
 ---
 
@@ -136,11 +137,11 @@ Key calibration values to adjust for your hardware:
 
 | Constant | Default | What to calibrate |
 |---|---|---|
-| `PH_CAL_SLOPE` / `PH_CAL_OFFSET` | -5.70 / 21.34 | Two-point calibration with pH 4.0 and 7.0 buffers |
+| `PH_CAL_SLOPE` / `PH_CAL_OFFSET` | 3.50 / 0.00 | Slope and offset for 0–5V analog signal with 2:1 divider |
 | `TURB_COEFF_A/B/C` | -1120.4 / 5742.3 / -4352.9 | Polynomial curve fit for your turbidity sensor unit |
-| `DO_CAL1_V` / `DO_CAL1_T` | 1600 mV / 25°C | Single-point in air-saturated water |
-| `EC_K_CAL` | 1.0 | Test against known EC standard solution |
-| `ORP_OFFSET` | 0.0 mV | Offset from ORP standard solution |
+| `DO_CAL1_V` / `DO_CAL1_T` | 764 mV / 24°C | Single-point air saturation voltage (post 2:1 divider, ~1.54V board output) |
+| `DO_TEMP_COMP_MV` | 17.5 mV/°C | Temperature coefficient post-divider (~35 mV/°C at sensor output) |
+| `ORP_OFFSET` | 0.0 mV | Offset from ORP standard solution (reconstructed 2.0V midpoint formula) |
 
 ---
 
@@ -148,11 +149,12 @@ Key calibration values to adjust for your hardware:
 
 | Peripheral | Usage |
 |---|---|
-| **ADC1** | 6 analog sensors (channels 3, 4, 5, 6, 10, 13), 16× oversampling |
-| **I2C1** | BME280 environmental sensor (addr `0x76`) |
+| **ADC1** | Analog sensors (PA3, PA4, PA5, PC3, PC0), 16× oversampling, 480 cycles sampling time |
+| **I2C1** | BMP280 barometer (`0x76`) and BNO085 9-DOF IMU (`0x4A`) |
 | **USART3** | JSON telemetry TX + depth sensor UART RX |
+| **UART4** | NEO-M8N GPS UART RX (`PC11`) |
 | **TIM6** | Microsecond-precision delay for OneWire timing |
-| **GPIO PE6** | DS18B20 OneWire data bus |
+| **GPIO PE6** | DS18B20 OneWire data bus (external 4.7kΩ pull-up) |
 | **GPIO PB0** | LD1 heartbeat LED |
 
 ---

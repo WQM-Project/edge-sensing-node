@@ -22,12 +22,12 @@
 ### Sensor Drivers — Analog (ADC-based)
 - [x] ADC single-channel reader with 16× oversampling (`ADC_Read_Channel`)
 - [x] ADC-to-voltage converter accounting for 2:1 voltage divider (`ADC_Read_Voltage`)
-- [x] **pH** — SEN0161 read with two-point calibration (slope/offset), clamped 0–14 (`Sensor_ReadPH`)
+- [x] **pH** — SEN0161 read on PA3 (ADC_CH3) with slope/offset calibration, verified in clean tap vs detergent (`Sensor_ReadPH`)
 - [x] **Turbidity** — SEN0189 quadratic polynomial conversion, clamped 0–3000 NTU (`Sensor_ReadTurbidity`)
-- [x] **TDS** — SEN0244 cubic polynomial with temperature compensation, clamped 0–1000 ppm (`Sensor_ReadTDS`)
-- [x] **Dissolved Oxygen** — SEN0237-A with DO saturation lookup table, temperature + barometric pressure compensation (`Sensor_ReadDO`)
+- [x] **TDS** — SEN0244 on PA5 (ADC_CH5) cubic polynomial with temperature compensation, physical salt disturbance verified (`Sensor_ReadTDS`)
+- [x] **Dissolved Oxygen** — SEN0237-A on PA4 (ADC_CH4) with DO saturation lookup table, 7.5% KCl electrolyte, thermal deaeration verified in hot water (`Sensor_ReadDO`)
 - [x] **Conductivity** — DFR0300 linear conversion with temperature normalization to 25°C (`Sensor_ReadConductivity`)
-- [x] **ORP** — SEN0165 adapted DFRobot formula for 12-bit ADC + voltage divider (`Sensor_ReadORP`)
+- [x] **ORP** — SEN0165 on PC3 (ADC_CH13) 2.0V midpoint formula + 20-sample trimmed mean noise filter, detergent disturbance verified (`Sensor_ReadORP`)
 
 ### Sensor Drivers — Digital
 - [x] **DS18B20 (×2)** — Full OneWire bit-bang driver (reset, read/write bit, read/write byte)

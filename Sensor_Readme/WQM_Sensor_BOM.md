@@ -68,23 +68,19 @@
 
 ---
 
-## 4. Interface Summary
+## 4. Interface Summary (NUCLEO-F722ZE)
 
-| Bus / Channel | Sensors Connected | Pin Requirement |
-| --------------- | ------------------- | ----------------- |
-| ADC Ch 0 | pH (SEN0161) | 1 analog input |
-| ADC Ch 1 | Turbidity (SEN0189) | 1 analog input |
-| ADC Ch 2 | TDS (SEN0244) | 1 analog input |
-| ADC Ch 3 | DO (SEN0237-A) | 1 analog input |
-| ADC Ch 4 | Conductivity (DFR0300) | 1 analog input |
-| ADC Ch 5 | ORP (SEN0165) | 1 analog input |
-| OneWire bus | DS18B20 × 2 (primary + backup) | 1 digital pin (shared bus) |
-| UART RX | Depth sensor UART output | 1 UART RX pin |
-| I2C (SDA/SCL) | BME280 (addr 0x76 or 0x77) | 2 pins (shared bus) |
-| **Total** | **10 sensors** | **6 ADC + 2 digital + 1 UART + 2 I2C** |
-
-> [!NOTE]
-> STM32F405 provides 16 ADC channels, 4 I2C buses, and 80+ GPIO — ample headroom for the full suite plus future expansion.
+| Pin | ADC Channel / Bus | Sensor Connected | Notes |
+| --------------- | ------------------- | ----------------- | ----- |
+| **PA3** | ADC1 Channel 3 | pH (SEN0161) | 0–5V output via 2:1 divider |
+| **PA4** | ADC1 Channel 4 | DO (SEN0237-A) | 0–3V output via 2:1 divider |
+| **PA5** | ADC1 Channel 5 | TDS (SEN0244) | 0–2.3V output via 2:1 divider |
+| **PC3** | ADC1 Channel 13 | ORP (SEN0165) | Centered at 2.0V via 2:1 divider |
+| **PC0** | ADC1 Channel 10 | Turbidity (SEN0189) | 0–4.5V output via 2:1 divider |
+| **PE6** | OneWire Bus | DS18B20 (Water Temp) | External 4.7kΩ pull-up to 3.3V |
+| **PB8 / PB9** | I2C1 | BMP280 Barometer (`0x76`) + BNO085 IMU (`0x4A`) | Shared I2C bus with pull-ups |
+| **PC10 / PC11**| UART4 | NEO-M8N GPS | 9600 baud NMEA stream |
+| **PD9** | USART3 RX | Depth sensor UART | IP68 ultrasonic distance |
 
 ---
 
@@ -151,7 +147,7 @@ PROBE MAST (submerged, rigid PVC/3D-printed)
 - [ ] Turbidity sensor kit (SEN0189)
 - [ ] TDS sensor kit (SEN0244)
 - [ ] DS18B20 waterproof probes × 2
-- [ ] DO sensor kit (SEN0237-A) — verify NaOH fill solution is included or source locally
+- [ ] DO sensor kit (SEN0237-A) — verify 7.5% KCl electrolyte solution (2g KCl in 26g pure water) is included or source locally
 - [ ] Conductivity sensor kit (DFR0300) + 1413 μS/cm calibration standard
 - [ ] ORP sensor kit (SEN0165) + cleaning solution
 - [ ] IP68 underwater ultrasonic obstacle avoidance sensor (6 m, UART)

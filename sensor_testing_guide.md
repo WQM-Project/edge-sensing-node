@@ -26,10 +26,10 @@ Wire and verify each sensor individually before adding the next. This isolates p
 | 4 | DS18B20 ×1 | OneWire (PE6) | Digital, no ADC — validates bit-bang timing |
 | 5 | pH (SEN0161) | ADC CH3 (PA3) | First analog — validates ADC + voltage divider |
 | 6 | Turbidity (SEN0189) | ADC CH10 (PC0) | Second analog channel |
-| 7 | TDS (SEN0244) | ADC CH13 (PC3) | Needs water temp for compensation |
+| 7 | TDS (SEN0244) | ADC CH5 (PA5) | Needs water temp for compensation |
 | 8 | DO (SEN0237-A) | ADC CH4 (PA4) | Needs temp + pressure compensation |
 | 9 | Conductivity (DFR0300) | ADC CH5 (PA5) | Needs temp compensation |
-| 10 | ORP (SEN0165) | ADC CH6 (PA6) | Last analog |
+| 10 | ORP (SEN0165) | ADC CH13 (PC3) | Last analog |
 | 11 | Depth sensor | UART RX via USART3 (PD9) | Shares USART3 RX line |
 | 12 | GPS (NEO-6M/BN-220) | UART4 (PC10/PC11) | Interrupt-driven, test last |
 
@@ -424,7 +424,7 @@ SEN0189 Analog Out ──── 10kΩ ──┬── PC0 (ADC_CH10)
 
 ---
 
-## 7. TDS Sensor (SEN0244 — ADC Channel 13)
+## 7. TDS Sensor (SEN0244 — ADC Channel 5)
 
 > [!NOTE]
 > **Confirmed model: DFRobot Gravity SEN0244.** The signal board operates on **3.3V–5.5V** and its analog output is **0–2.3V max** — it never reaches 5V. This means the STM32F7 ADC (3.3V tolerant) is **safe even without a voltage divider** when the board is powered at 3.3V. However, the firmware uses `VDIV_SCALE = 2.0` for all analog channels, so keep the 2:1 divider in place to match the firmware's assumption, or power at 3.3V and change `VDIV_SCALE` for this channel.
@@ -435,14 +435,14 @@ SEN0189 Analog Out ──── 10kΩ ──┬── PC0 (ADC_CH10)
 |-------------|------------|
 | **V+** | **3.3V** (safe; board accepts 3.3V–5.5V; output stays ≤ 2.3V at any VCC) |
 | **GND** | GND |
-| **A (Analog Out)** | PC3 — **through 2:1 voltage divider** (required to match firmware `VDIV_SCALE = 2.0`) |
+| **A (Analog Out)** | PA5 — **through 2:1 voltage divider** (required to match firmware `VDIV_SCALE = 2.0`) |
 
 > [!TIP]
-> Powering the SEN0244 at **3.3V** is the cleanest option: the signal board works correctly, the output is ≤ ~1.5V, and the divider gives ≤ 0.75V at the ADC pin — well within range. If you power at 5V the output is ≤ 2.3V; the divider gives ≤ 1.15V at PC3 — also safe.
+> Powering the SEN0244 at **3.3V** is the cleanest option: the signal board works correctly, the output is ≤ ~1.5V, and the divider gives ≤ 0.75V at the ADC pin — well within range. If you power at 5V the output is ≤ 2.3V; the divider gives ≤ 1.15V at PA5 — also safe.
 
 Voltage divider (keep regardless of VCC choice, to match firmware):
 ```
-SEN0244 Analog Out ──── 10kΩ ──┬── PC3 (ADC_CH13)
+SEN0244 Analog Out ──── 10kΩ ──┬── PA5 (ADC_CH5)
                                 │
                                10kΩ
                                 │
@@ -591,7 +591,7 @@ $$V_{\text{board}} = V_{\text{ADC\_pin}} \times \text{VDIV\_SCALE} = \left(\frac
 |-------------|------------|-------|
 | **V+** | **5V** | SEN0165 requires clean 5.0V supply |
 | **GND** | **GND** | Common ground with STM32 |
-| **A (Analog Out)** | **PA6** | **MUST go through 2:1 voltage divider (10kΩ / 10kΩ)** |
+| **A (Analog Out)** | **PC3** | **MUST go through 2:1 voltage divider (10kΩ / 10kΩ)** |
 
 > [!CAUTION]
 > **DO NOT PRESS THE ON-BOARD CALIBRATION BUTTON!**  
@@ -632,7 +632,7 @@ The standard calibration solution provides **222 mV ± 15 mV at 25°C** (using 3
 
 Use a digital multimeter to verify voltages at various stages:
 
-| State / Solution | Expected $V_{\text{board}}$ (Pin A) | Voltage at STM32 PA6 (after divider) | Expected ORP Value |
+| State / Solution | Expected $V_{\text{board}}$ (Pin A) | Voltage at STM32 PC3 (after divider) | Expected ORP Value |
 |---|---|---|---|
 | **0 mV Potential (shorted BNC)** | 2.00 V | 1.00 V | ~0 mV |
 | **222 mV Standard Solution (25°C)** | ~1.778 V | ~0.889 V | **+222 mV (±15 mV)** |

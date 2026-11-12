@@ -22,7 +22,6 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "bno085.h"
-#include "gps.h"
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -176,6 +175,12 @@ typedef struct {
   "WQM-001" // incase multiple of these units are deployed later, so each must
             // carry an id
 
+/* ── Onboard ESP32 Gateway UART (Option A: UART4 PC10=TX / PC11=RX @ 115200) */
+#define ESP32_UART         (&huart4)
+#define ESP32_REPLY_BUF    48
+#define ESP32_ACK_TIMEOUT  1000U /* ms to wait for ACK/NAK reply */
+#define ESP32_MAX_ATTEMPTS 3     /* Retries on missing reply or NAK storage */
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -208,9 +213,6 @@ static uint32_t sample_counter = 0;
 
 /* BNO085 orientation data */
 static BNO085_Orientation_t imu_orient;
-
-/* GPS parsed data */
-static GPS_Data_t gps_data;
 
 /* DS18B20 ROM addresses — filled at boot by search */
 static uint8_t ds18b20_rom[2][8]; /* ROM codes for up to 2 sensors       */
@@ -279,12 +281,15 @@ static float Sensor_ReadORP(void);
 
 /* ── JSON builder ───────────────────────────────────────────────────────────
  */
+static float Sanitize_Float(float val, float fallback);
 static uint16_t WQM_BuildJSON(const WQM_SensorData_t *data, char *buf,
                               uint16_t buf_size);
 
-/* ── Debug UART output ──────────────────────────────────────────────────────
+/* ── Debug & ESP32 Gateway UART output ─────────────────────────────────────
  */
 void Debug_Print(const char *str);
+static uint8_t ESP32_ReadReply(char *reply, size_t size, uint32_t timeout_ms);
+static uint8_t ESP32_SendPacket(const char *json, uint16_t len);
 
 /* USER CODE END PFP */
 
@@ -948,12 +953,16 @@ static float Sensor_ReadORP(void) {
 /* ═══════════════════════════════════════════════════════════════════════════
  */
 
+static float Sanitize_Float(float val, float fallback) {
+  return isfinite(val) ? val : fallback;
+}
+
 /**
  * @brief  Build a JSON payload from the sensor data struct.
  * @param  data     Pointer to sensor data
  * @param  buf      Output buffer
  * @param  buf_size Buffer size
- * @return Number of bytes written (excluding null terminator)
+ * @return Number of bytes written (excluding null terminator), or 0 if truncated
  */
 static uint16_t WQM_BuildJSON(const WQM_SensorData_t *data, char *buf,
                               uint16_t buf_size) {
@@ -980,24 +989,122 @@ static uint16_t WQM_BuildJSON(const WQM_SensorData_t *data, char *buf,
       "\"pitch\":%.1f,"
       "\"roll\":%.1f"
       "}\r\n",
-      DEVICE_ID, (unsigned long)HAL_GetTick(), data->ph,
-      data->tds_ppm, data->do_mgl, data->orp_mv,
-      data->water_temp_1, data->air_temp,
-      data->pressure_hpa, data->latitude, data->longitude, data->altitude_m,
-      data->speed_knots, data->course_deg, data->gps_fix, data->satellites,
-      data->heading, data->pitch, data->roll);
+      DEVICE_ID, (unsigned long)HAL_GetTick(),
+      Sanitize_Float(data->ph, 0.0f),
+      Sanitize_Float(data->tds_ppm, 0.0f),
+      Sanitize_Float(data->do_mgl, 0.0f),
+      Sanitize_Float(data->orp_mv, 0.0f),
+      Sanitize_Float(data->water_temp_1, 0.0f),
+      Sanitize_Float(data->air_temp, 0.0f),
+      Sanitize_Float(data->pressure_hpa, 0.0f),
+      Sanitize_Float(data->latitude, 0.0f),
+      Sanitize_Float(data->longitude, 0.0f),
+      Sanitize_Float(data->altitude_m, 0.0f),
+      Sanitize_Float(data->speed_knots, 0.0f),
+      Sanitize_Float(data->course_deg, 0.0f),
+      data->gps_fix, data->satellites,
+      Sanitize_Float(data->heading, 0.0f),
+      Sanitize_Float(data->pitch, 0.0f),
+      Sanitize_Float(data->roll, 0.0f));
 
-  return (uint16_t)((len > 0) ? len : 0);
+  return (len > 0 && len < (int)buf_size) ? (uint16_t)len : 0;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
  */
-/*                           DEBUG UART OUTPUT                               */
+/*                       DEBUG & ESP32 GATEWAY UART                          */
 /* ═══════════════════════════════════════════════════════════════════════════
  */
 
 void Debug_Print(const char *str) {
   HAL_UART_Transmit(&huart3, (uint8_t *)str, strlen(str), 500);
+}
+
+/**
+ * @brief  Read one newline-terminated reply line ("ACK" / "NAK <reason>")
+ *         from the onboard ESP32 gateway over UART4.
+ */
+static uint8_t ESP32_ReadReply(char *reply, size_t size, uint32_t timeout_ms) {
+  uint32_t start = HAL_GetTick();
+  size_t len = 0;
+
+  while ((HAL_GetTick() - start) < timeout_ms) {
+    uint8_t c = 0;
+    if (HAL_UART_Receive(ESP32_UART, &c, 1, 10) != HAL_OK) {
+      __HAL_UART_CLEAR_FLAG(ESP32_UART,
+                            UART_CLEAR_OREF | UART_CLEAR_FEF | UART_CLEAR_NEF);
+      continue;
+    }
+    if (c == '\r') {
+      continue;
+    }
+    if (c == '\n') {
+      reply[len] = '\0';
+      return 1;
+    }
+    if (len < (size - 1)) {
+      reply[len++] = (char)c;
+    }
+  }
+
+  reply[len] = '\0';
+  return 0; /* Timed out */
+}
+
+/**
+ * @brief  Transmit one JSON telemetry line over UART4 to ESP32 and wait for ACK.
+ * @return 1 if ESP32 acknowledged storage ("ACK"), 0 otherwise.
+ */
+static uint8_t ESP32_SendPacket(const char *json, uint16_t len) {
+  if (json == NULL || len == 0) {
+    return 0;
+  }
+
+  for (int attempt = 1; attempt <= ESP32_MAX_ATTEMPTS; attempt++) {
+    uint8_t junk = 0;
+    __HAL_UART_CLEAR_FLAG(ESP32_UART,
+                          UART_CLEAR_OREF | UART_CLEAR_FEF | UART_CLEAR_NEF | UART_CLEAR_PEF);
+    while (HAL_UART_Receive(ESP32_UART, &junk, 1, 0) == HAL_OK) {
+    }
+    __HAL_UART_CLEAR_FLAG(ESP32_UART,
+                          UART_CLEAR_OREF | UART_CLEAR_FEF | UART_CLEAR_NEF);
+
+    if (HAL_UART_Transmit(ESP32_UART, (uint8_t *)json, len, 200) != HAL_OK) {
+      Debug_Print("[ESP32] UART4 TX error\r\n");
+      continue;
+    }
+
+    char reply[ESP32_REPLY_BUF];
+    if (!ESP32_ReadReply(reply, sizeof(reply), ESP32_ACK_TIMEOUT)) {
+      char msg[64];
+      snprintf(msg, sizeof(msg), "[ESP32] No ACK (attempt %d/%d)\r\n", attempt,
+               ESP32_MAX_ATTEMPTS);
+      Debug_Print(msg);
+      continue;
+    }
+
+    if (strcmp(reply, "ACK") == 0) {
+      Debug_Print("[ESP32] ACK\r\n");
+      return 1;
+    }
+
+    if (strcmp(reply, "NAK storage") == 0) {
+      char msg[64];
+      snprintf(msg, sizeof(msg), "[ESP32] NAK storage (attempt %d/%d)\r\n",
+               attempt, ESP32_MAX_ATTEMPTS);
+      Debug_Print(msg);
+      continue;
+    }
+
+    /* Any other NAK indicates a schema/JSON format issue; retrying won't help */
+    char err_msg[80];
+    snprintf(err_msg, sizeof(err_msg), "[ESP32] Rejected: %s\r\n", reply);
+    Debug_Print(err_msg);
+    return 0;
+  }
+
+  Debug_Print("[ESP32] Send failed after max attempts\r\n");
+  return 0;
 }
 
 /* Manual peripheral init functions removed — CubeMX now generates them.
@@ -1093,13 +1200,8 @@ int main(void)
 
   Debug_Print("[OK]  All peripherals initialized.\r\n");
 
-  /* ── Initialize GPS ───────────────────────────────────────────────────────
-   */
-  if (GPS_Init(&huart4) == 0) {
-    Debug_Print("[OK]  GPS UART initialized.\r\n");
-  } else {
-    Debug_Print("[ERR] GPS UART failed to initialize!\r\n");
-  }
+  /* ── Onboard ESP32 Gateway UART Link (UART4: PC10 TX -> GPIO25 RX, PC11 RX <- GPIO26 TX) */
+  Debug_Print("[OK]  ESP32 UART4 ready (PC10=TX / PC11=RX @ 115200).\r\n");
 
   /* ── Initialize BNO085 ────────────────────────────────────────────────────
    */
@@ -1187,26 +1289,25 @@ int main(void)
       }
     }
 
-    /* ── Step 8: Copy latest GPS data ───────────────────────────────────────
-     */
-    GPS_GetData(&gps_data);
-    sensor_data.latitude = gps_data.latitude;
-    sensor_data.longitude = gps_data.longitude;
-    sensor_data.altitude_m = gps_data.altitude_m;
-    sensor_data.speed_knots = gps_data.speed_knots;
-    sensor_data.course_deg = gps_data.course_deg;
-    sensor_data.gps_fix = gps_data.fix_quality;
-    sensor_data.satellites = gps_data.satellites;
+    /* ── Step 8: Placeholder GNSS fields (ESP32 SIM7600 supplies primary GPS) */
+    sensor_data.latitude = 0.0f;
+    sensor_data.longitude = 0.0f;
+    sensor_data.altitude_m = 0.0f;
+    sensor_data.speed_knots = 0.0f;
+    sensor_data.course_deg = 0.0f;
+    sensor_data.gps_fix = 0;
+    sensor_data.satellites = 0;
 
     /* ═══════════════════════════════════════════════════════════════════════
      */
-    /*  BUILD JSON PACKET & TRANSMIT VIA USART3 (USB debug / ESP32 UART)     */
+    /*  BUILD JSON PACKET: PRINT ON USART3 DEBUG + SEND OVER UART4 TO ESP32  */
     /* ═══════════════════════════════════════════════════════════════════════
      */
 
     uint16_t json_len = WQM_BuildJSON(&sensor_data, json_buf, JSON_BUF_SIZE);
     if (json_len > 0) {
       Debug_Print(json_buf);
+      ESP32_SendPacket(json_buf, json_len);
     }
 
     /* Status LED blink — green LD1 on PB0 */
@@ -1613,15 +1714,8 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 
-/**
- * @brief UART RX Complete Callback for GPS
- */
-void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
-  if (huart->Instance == UART4) {
-    extern void GPS_UART_IRQCallback(void);
-    GPS_UART_IRQCallback();
-  }
-}
+/* UART4 now communicates synchronously with the onboard ESP32 gateway via
+ * ESP32_SendPacket() / ESP32_ReadReply(), so no GPS RX IRQ is registered. */
 
 /* USER CODE END 4 */
 

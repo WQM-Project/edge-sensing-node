@@ -46,14 +46,15 @@ and upload automatically when signal returns).
 
 | STM32 | ESP32 | Notes |
 | --- | --- | --- |
-| UART **TX** | **GPIO25** (ESP32 RX) | Readings STM32 → ESP32 |
-| UART **RX** | **GPIO26** (ESP32 TX) | ACK/NAK replies ESP32 → STM32 |
+| **`PC10`** (`UART4_TX`) | **GPIO25** (ESP32 RX) | Readings STM32 → ESP32 |
+| **`PC11`** (`UART4_RX`) | **GPIO26** (ESP32 TX) | ACK/NAK replies ESP32 → STM32 |
 | **GND** | **GND** | Required. Also shared with the SIM7600 modem and the power supply. |
 
 - **3.3 V logic only.** Both chips use 3.3 V signals. Never connect a 5 V UART
   signal to the ESP32.
-- Use any free STM32 USART/UART. Do **not** use the UART the STM32 already uses
-  for its own debug printing unless you remove that printing.
+- The firmware keeps **`USART3` (`PD8`/`PD9`)** dedicated to ST-LINK USB debug
+  output and uses **`UART4` (`PC10`/`PC11`)** exclusively for ESP32 packets so
+  debug text never mixes into telemetry.
 - Do not connect the boards' 3.3 V or 5 V power pins to each other; power each
   board from the boat's 5 V supply as agreed for the build.
 

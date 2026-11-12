@@ -77,8 +77,8 @@
 
 ### Communication — Onboard ESP32 UART RX–TX Link
 - [x] `WQM_BuildJSON` active 19-field newline-delimited JSON serializer (`STM32_INTEGRATION.md` contract)
-- [ ] Dedicated 3.3V UART TX/RX port (`115200 8N1` to onboard ESP32 `GPIO25`/`GPIO26`) separate from USB debug UART
-- [ ] `ACK` / `NAK` reply handling and retry logic (`send_reading` per `STM32_INTEGRATION.md`)
+- [x] Dedicated 3.3V `UART4` TX/RX port (`PC10` TX / `PC11` RX @ `115200 8N1` → ESP32 `GPIO25`/`GPIO26`) separate from `USART3` USB debug UART
+- [x] `ACK` / `NAK` reply handling and retry logic (`ESP32_SendPacket` / `ESP32_ReadReply` in `main.c`)
 - [ ] Onboard end-to-end soak test with ESP32 + SIM7600 4G LTE + GNSS gateway
 
 ### Power Management
@@ -122,7 +122,7 @@
 | Data Collection Loop | ✅ Done |
 | **JSON Data Packet** | **✅ Done** |
 | Debug UART Output | ✅ Done |
-| Onboard ESP32 UART Link | 🟡 In Progress (`WQM_BuildJSON` ready; dedicated UART + ACK/NAK pending) |
+| Onboard ESP32 UART Link | ✅ Implemented (`UART4` `PC10`/`PC11` + `ACK`/`NAK`; field soak test pending) |
 | Power Management | ❌ Not started |
 | Error Handling / Watchdog | ❌ Not started |
 | Runtime Calibration | ❌ Not started |

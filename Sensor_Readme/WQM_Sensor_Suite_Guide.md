@@ -28,7 +28,7 @@
 
 **Active ADC channels used:** 4 active (`PA3` pH, `PA4` DO, `PA5` TDS, `PC3` ORP — all via 2:1 10kΩ/10kΩ dividers; `PC0` turbidity & `PA6` conductivity reserved)  
 **Digital pins used:** `PE6` (OneWire bus for DS18B20 with 4.7 kΩ pull-up)  
-**UART used:** 2–3 (`USART3` ST-LINK debug + JSON; dedicated 3.3V UART RX–TX to onboard ESP32 + SIM7600 4G/GNSS gateway; optional `UART4` `PC10/PC11` for NEO-M8N)  
+**UART used:** 2 (`USART3` ST-LINK USB debug; `UART4` `PC10/PC11` → onboard ESP32 `GPIO25/GPIO26` + SIM7600 4G/GNSS gateway)  
 **I2C1 devices:** `BMP280` (`0x76` — air temp + barometric pressure) + `BNO085` IMU (`0x4A`)  
 **STM32F722ZE capacity:** 16+ ADC channels, multiple I2C/UART — ample headroom.
 

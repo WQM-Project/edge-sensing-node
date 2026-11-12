@@ -35,13 +35,13 @@ This repo contains the firmware for the **edge sensing node**: a NUCLEO-F722ZE b
 | Depth | IP68 Underwater Ultrasonic Obstacle Avoidance Sensor (6 m) | UART | USART3 RX (PD9) | Water Level | cm |
 | Atmospheric | BMP280 | I2C1 | PB8/PB9 | Air Temp, Pressure | °C, hPa |
 | Navigation / IMU | BNO085 | I2C1 | PB8/PB9 | Orientation (heading, pitch, roll) | ° |
-| Location | Onboard SIM7600 GNSS *(via ESP32)* / Optional NEO-M8N | UART | ESP32+SIM7600 *(optional `UART4` `PC10/PC11`)* | GPS Navigation & Coordinates | — |
+| Location | Onboard SIM7600 GNSS *(via ESP32)* | UART | `UART4` (`PC10`/`PC11` ↔ ESP32 `GPIO25`/`GPIO26`) | GPS Navigation & Coordinates | — |
 
 ---
 
 ## JSON Telemetry Packet
 
-Every `SAMPLE_INTERVAL_MS` (default **5 s**), the node serializes the active 19-field telemetry line (see [STM32_INTEGRATION.md](STM32_INTEGRATION.md)) and transmits it over UART to the onboard ESP32 gateway:
+Every `SAMPLE_INTERVAL_MS` (default **1 s**), the node serializes the active 19-field telemetry line (see [STM32_INTEGRATION.md](STM32_INTEGRATION.md)), prints diagnostics on `USART3`, and transmits the JSON packet over `UART4` to the onboard ESP32 gateway:
 
 ```json
 {
@@ -106,9 +106,10 @@ main()
         ├── Sensor_ReadDO()           Step 7: DO (PA4, longest settling)
         │
         ├── WQM_BuildJSON()           Serialize 19-field active JSON
-        ├── Debug_Print()             TX via USART3
+        ├── Debug_Print()             Print JSON/diagnostics on USART3 (ST-LINK USB)
+        ├── ESP32_SendPacket()        Send JSON over UART4 + wait for ACK/NAK
         ├── Toggle LD1 (PB0)          Heartbeat LED
-        └── HAL_Delay(5000)           Wait for next sample
+        └── HAL_Delay(...)            Service BNO085 FIFO until next sample
 ```
 
 ---
@@ -157,8 +158,8 @@ Key calibration values to adjust for your hardware:
 |---|---|
 | **ADC1** | Analog sensors (PA3, PA4, PA5, PC3, PC0), 16× oversampling, 480 cycles sampling time |
 | **I2C1** | BMP280 barometer (`0x76`) and BNO085 9-DOF IMU (`0x4A`) |
-| **USART3** | JSON telemetry TX + USB debug ST-LINK VCP (dedicated 3.3V UART RX–TX to onboard ESP32 per [STM32_INTEGRATION.md](STM32_INTEGRATION.md)) |
-| **UART4** | Optional NEO-M8N GPS UART RX (`PC11`; primary GNSS comes from SIM7600 on the onboard ESP32 gateway) |
+| **USART3** | ST-LINK VCP USB debug console (`PD8`/`PD9` @ 115200 8N1) |
+| **UART4** | Dedicated onboard ESP32 gateway link (`PC10` TX → `GPIO25` RX, `PC11` RX ← `GPIO26` TX @ 115200 8N1) |
 | **TIM6** | Microsecond-precision delay for OneWire timing |
 | **GPIO PE6** | DS18B20 OneWire data bus (external 4.7kΩ pull-up) |
 | **GPIO PB0** | LD1 heartbeat LED |

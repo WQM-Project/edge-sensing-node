@@ -793,28 +793,24 @@ Sensor Analog Out ──── 10kΩ ──┬── To STM32 ADC Pin
 
 ---
 
-## Quick-Reference: Expected JSON Output (All Sensors Working)
+## Quick-Reference: Expected JSON Output
 
 > [!NOTE]
-> The BMP280 does **not** produce a `humidity` field. The JSON has 22 fields — no humidity.
+> The BMP280 does **not** produce a `humidity` field, and unfitted/reserved probes (`turb_ntu`, `ec_uscm`, `temp_w2`, `depth_cm`) are omitted in the current build — `WQM_BuildJSON()` outputs 19 fields (23 if all optional water/depth probes are re-enabled).
 
 ```json
 {
   "id": "WQM-001",
-  "ts": 123456789,
+  "ts": 166519,
   "pH": 7.12,
-  "turb_ntu": 42.5,
   "tds_ppm": 310.0,
-  "do_mgl": 6.85,
-  "ec_uscm": 680.2,
-  "orp_mv": 222.0,
-  "temp_w1": 23.50,
-  "temp_w2": 0.00,
-  "depth_cm": 35.2,
+  "do_mgl": 8.84,
+  "orp_mv": 91.6,
+  "temp_w1": 23.62,
   "temp_air": 28.60,
   "pressure_hpa": 1013.25,
-  "lat": 31.1048,
-  "lon": 77.1734,
+  "lat": 31.104800,
+  "lon": 77.173400,
   "alt_m": 2050.0,
   "sog_knots": 0.0,
   "cog_deg": 0.0,

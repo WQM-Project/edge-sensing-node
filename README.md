@@ -66,15 +66,16 @@ Every `SAMPLE_INTERVAL_MS` (default **5 s**), the node serializes all sensor dat
 |---|---|
 | `id` | Device identifier (supports multi-node deployment) |
 | `ts` | Timestamp — `HAL_GetTick()` ms since boot |
-| `pH` | pH value (two-point calibrated) |
-| `turb_ntu` | Turbidity in NTU (quadratic polynomial fit) |
-| `tds_ppm` | Total Dissolved Solids, temperature-compensated |
-| `do_mgl` | Dissolved Oxygen in mg/L (pressure + temp compensated) |
-| `ec_uscm` | Electrical Conductivity in µS/cm |
-| `orp_mv` | Oxidation-Reduction Potential in mV |
-| `temp_w1` / `temp_w2` | Primary and backup water temperature (DS18B20) |
-| `depth_cm` | Ultrasonic water-level distance from UART depth frame |
-| `temp_air` / `humidity` / `pressure_hpa` | Atmospheric conditions (BME280) |
+| `pH` | pH value (3-point linear regression: `PH_SCALE = 4.942f`, `PH_OFFSET = -2.713f`) |
+| `tds_ppm` | Total Dissolved Solids in ppm (`TDS_CAL_K = 1.036f`, DS18B20 temperature-compensated) |
+| `do_mgl` | Dissolved Oxygen in mg/L (7.5% KCl, BMP280 pressure + DS18B20 temp compensated) |
+| `orp_mv` | Oxidation-Reduction Potential in mV (2.0V midpoint formula + 20-sample trimmed mean) |
+| `temp_w1` | Water temperature in °C (DS18B20 on `PE6`) |
+| `temp_air` / `pressure_hpa` | Atmospheric air temperature and barometric pressure (`BMP280` on `PB8/PB9`, no RH sensor) |
+| `lat` / `lon` / `alt_m` / `sog_knots` / `cog_deg` / `gps_fix` / `sats` | NEO-M8N GNSS navigation telemetry (`UART4`) |
+| `heading` / `pitch` / `roll` | BNO085 9-DOF IMU Euler orientation (`I2C1`) |
+
+*(Note: Optional drivers for `turb_ntu` / `ec_uscm` / `temp_w2` / `depth_cm` exist in firmware, and `humidity` is omitted with BMP280.)*
 
 ---
 
@@ -85,22 +86,21 @@ The firmware follows a **stop-and-sample** sequential acquisition pattern, optim
 ```
 main()
   ├── SystemClock_Config()       216 MHz HSE PLL
-  ├── MX_*_Init()                ADC1, I2C1, USART3, TIM6, GPIO
-  ├── BME280_Init()              Read calibration NVM
+  ├── MX_*_Init()                ADC1, I2C1, USART3, UART4, TIM6, GPIO
+  ├── BMP280_Init()              Read calibration NVM (addr 0x76)
+  ├── BNO085_Init()              Initialize 9-DOF IMU (addr 0x4A)
   ├── DS18B20_SearchROM()        Discover 1-Wire devices
   │
   └── while(1)
-        ├── BME280_ReadAll()          Step 1: Atmospheric
-        ├── DS18B20 Convert + Read    Step 2: Water temp (750ms conversion)
-        ├── Sensor_ReadConductivity() Step 3: Fast analog sensors
-        ├── Sensor_ReadTDS()
-        ├── Sensor_ReadTurbidity()
-        ├── Sensor_ReadORP()          Step 4: ORP
-        ├── Sensor_ReadPH()           Step 5: pH
-        ├── Sensor_ReadDO()           Step 6: DO (longest settling)
-        ├── DepthSensor_ReadDistance() Step 7: UART depth
+        ├── BMP280_ReadAll()          Step 1: Atmospheric pressure & air temp
+        ├── BNO085_Update()           Step 2: IMU orientation
+        ├── DS18B20 Convert + Read    Step 3: Water temp (750ms conversion)
+        ├── Sensor_ReadTDS()          Step 4: TDS (PA5)
+        ├── Sensor_ReadORP()          Step 5: ORP (PC3, 20-sample trimmed mean)
+        ├── Sensor_ReadPH()           Step 6: pH (PA3)
+        ├── Sensor_ReadDO()           Step 7: DO (PA4, longest settling)
         │
-        ├── WQM_BuildJSON()           Serialize → JSON
+        ├── WQM_BuildJSON()           Serialize 19-field active JSON
         ├── Debug_Print()             TX via USART3
         ├── Toggle LD1 (PB0)          Heartbeat LED
         └── HAL_Delay(5000)           Wait for next sample

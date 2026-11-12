@@ -21,7 +21,7 @@ Wire and verify each sensor individually before adding the next. This isolates p
 |-------|--------|-----------|----------------|
 | 0 | Fix merge conflicts | — | Build won't compile otherwise |
 | 1 | UART debug output | USART3 (PD8/PD9) | You need serial output to see anything |
-| 2 | BME280 | I2C1 (PB8/PB9) | Simplest digital sensor, validates I2C bus |
+| 2 | BMP280 | I2C1 (PB8/PB9) | Simplest digital sensor, validates I2C bus |
 | 3 | BNO085 | I2C1 (PB8/PB9) | Second I2C device, validates bus sharing |
 | 4 | DS18B20 ×1 | OneWire (PE6) | Digital, no ADC — validates bit-bang timing |
 | 5 | pH (SEN0161) | ADC CH3 (PA3) | First analog — validates ADC + voltage divider |
@@ -65,7 +65,7 @@ The NUCLEO-F722ZE routes USART3 through the on-board ST-Link as a **Virtual COM 
 ========================================
   WQM Sensor Suite — NUCLEO-F722ZE
 ========================================
-[ERR] BME280 not found! Check I2C wiring.
+[ERR] BMP280 not found! Check I2C wiring.
 [OK]  DS18B20 sensors found: 0
 [ERR] GPS UART failed to initialize!
 [ERR] BNO085 failed to initialize! Check I2C wiring.
@@ -154,14 +154,14 @@ Debug_Print("[I2C] Scan complete.\r\n");
 
 ### Wiring
 
-The BNO085 shares the **same I2C1 bus** as the BME280. Keep the BME280 connected.
+The BNO085 shares the **same I2C1 bus** as the BMP280. Keep the BMP280 connected.
 
 | BNO085 Pin | NUCLEO Pin | Wire Color (suggested) |
 |------------|------------|------------------------|
 | **VCC** / **3V3** | 3.3V | 🔴 Red |
 | **GND** | GND | ⚫ Black |
-| **SCL** | PB8 (same wire as BME280) | 🟡 Yellow |
-| **SDA** | PB9 (same wire as BME280) | 🔵 Blue |
+| **SCL** | PB8 (same wire as BMP280) | 🟡 Yellow |
+| **SDA** | PB9 (same wire as BMP280) | 🔵 Blue |
 | **RST** | Leave unconnected (driver does soft-reset) | — |
 | **INT** | Leave unconnected (polled mode) | — |
 
@@ -172,11 +172,11 @@ The BNO085 shares the **same I2C1 bus** as the BME280. Keep the BME280 connected
 
 ### Test Steps
 
-1. Wire BNO085 to the same I2C bus (BME280 stays connected)
+1. Wire BNO085 to the same I2C bus (BMP280 stays connected)
 2. Flash and reset
 3. Check serial:
    ```
-   [OK]  BME280 initialized (ID=0x60)
+   [OK]  BMP280 initialized (ID=0x58 at 0x76)
    [OK]  BNO085 initialized.
    ```
 4. Check JSON fields:
@@ -200,7 +200,7 @@ If `[ERR] BNO085 failed to initialize!`:
 - Both I2C devices detected on the same bus (no bus contention)
 - `heading` responds smoothly to rotation
 - `pitch` and `roll` respond to tilting
-- BME280 readings remain stable while BNO085 is active
+- BMP280 readings remain stable while BNO085 is active
 
 ---
 
@@ -751,7 +751,7 @@ NUCLEO CN8 (Arduino Left)               NUCLEO CN9 / Headers
 
 | Rail | Source | Consumers | Notes |
 |------|--------|-----------|-------|
-| **3.3V** | NUCLEO on-board regulator | BME280, BNO085, DS18B20, GPS, **SEN0244 (TDS)**, **SEN0237-A (DO)** | TDS and DO boards accept 3.3V-5.5V |
+| **3.3V** | NUCLEO on-board regulator | BMP280, BNO085, DS18B20, GPS, **SEN0244 (TDS)**, **SEN0237-A (DO)** | TDS and DO boards accept 3.3V-5.5V |
 | **5V** | NUCLEO USB (U5V) or external | **SEN0161 (pH V1)**, Turbidity (SEN0189), EC (DFR0300), **SEN0165 (ORP)**, Depth sensor | pH V1 and ORP are strictly 5V-only |
 
 > [!WARNING]
@@ -762,10 +762,10 @@ NUCLEO CN8 (Arduino Left)               NUCLEO CN9 / Headers
 ```
         3.3V
          │
-        4.7kΩ (on BME280 breakout, usually built-in)
+        4.7kΩ (on BMP280 breakout, usually built-in)
          │
-PB8 ────┬────── BME280 SCL ────── BNO085 SCL
-PB9 ────┬────── BME280 SDA ────── BNO085 SDA
+PB8 ────┬────── BMP280 SCL ────── BNO085 SCL
+PB9 ────┬────── BMP280 SDA ────── BNO085 SDA
          │
         4.7kΩ
          │

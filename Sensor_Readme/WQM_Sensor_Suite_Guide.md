@@ -22,15 +22,15 @@
 | 6 | Conductivity | Gravity Analog (K=1) | Analog | 1,200–1,800 |
 | 7 | **ORP** | **DFRobot SEN0165** | **Analog** | **9,400–10,800** |
 | 8 | Depth | IP68 Underwater Ultrasonic Obstacle Avoidance Sensor (6 m) | UART | 250–450 |
-| 9 | **Environmental** | **BME280** | **I2C** | **250–400** |
-| 10 | **Temperature (backup)** | **DS18B20** | **Digital (OneWire)** | **150–200** |
+| 9 | **Environmental** | **BMP280** | **I2C1 (`PB8/PB9`, `0x76`)** | **250–400** |
+| 10 | **Temperature (backup)** | **DS18B20** | **Digital (OneWire `PE6`)** | **150–200** |
 | | **TOTAL** | | | **₹16,700–20,650** |
 
-**ADC channels used:** 6 analog (pH, turbidity, TDS, DO, conductivity, ORP)  
-**Digital pins used:** 1 (OneWire bus for DS18B20s)  
-**UART used:** 1 (depth sensor UART RX)  
-**I2C devices:** 1 (BME280)  
-**STM32F405 capacity:** 16 ADC channels, multiple I2C/UART — ample headroom.
+**Active ADC channels used:** 4 active (`PA3` pH, `PA4` DO, `PA5` TDS, `PC3` ORP — all via 2:1 10kΩ/10kΩ dividers; `PC0` turbidity & `PA6` conductivity reserved)  
+**Digital pins used:** `PE6` (OneWire bus for DS18B20 with 4.7 kΩ pull-up)  
+**UART used:** 1 (`USART3` RX reserved for depth sensor; `UART4` `PC10/PC11` for NEO-M8N GPS)  
+**I2C1 devices:** `BMP280` (`0x76` — air temp + barometric pressure) + `BNO085` IMU (`0x4A`)  
+**STM32F722ZE capacity:** 16+ ADC channels, multiple I2C/UART — ample headroom.
 
 ---
 
@@ -150,13 +150,13 @@ Each sensor below includes three pricing tiers:
 
 **Mounting:** Deepest on probe mast. Rigid guard cage (wire mesh or 3D-printed) around membrane tip — non-negotiable.  
 **Firmware:** Log DO **last** in sampling sequence — by then the boat has been stationary longest, giving DO maximum settling time.  
-**Critical with BME280:** Apply barometric pressure compensation:
+**Critical with BMP280:** Apply barometric pressure compensation:
 
 ```
-DO_compensated = DO_raw × (temp_factor) × (BME280_pressure / 1013.25)
+DO_compensated = DO_raw × (BMP280_pressure / 1013.25)
 ```
 
-This corrects the 10–22% altitude error at Himalayan deployment sites.  
+With 7.5% KCl electrolyte (`DO_CAL1_V = 764 mV` post-divider at `DO_CAL1_T = 24°C`, `DO_TEMP_COMP_MV = 17.5 mV/°C`), this corrects the 10–22% altitude error at Himalayan deployment sites.  
 **Maintenance:** Membrane/electrolyte replacement every 2–3 weeks. **This is your #1 maintenance bottleneck.**
 
 ---
@@ -233,20 +233,20 @@ Without ORP, you detect "water is degraded." With ORP, you classify **why**.
 
 ---
 
-### 9. Environmental Sensor ✨ NEW
+### 9. Environmental Sensor ✨ ACTIVE
 
-**Selected: BME280 (Budget/Mid tier — same product)**
+**Selected: BMP280 (`0x76` — no humidity sensor on current build)**
 
 | Spec | Value |
 | ------ | ------- |
-| Parameters | Air temperature, humidity, barometric pressure |
+| Parameters | Air temperature, barometric pressure (altitude DO compensation) |
 | Pressure accuracy | ±1 hPa |
-| Interface | I2C (shares bus, no ADC channel consumed) |
+| Interface | I2C1 (`PB8/PB9`, shares bus with BNO085 IMU) |
 
 | Tier | Option | Price (₹) | Notes |
 |------|--------|-----------|-------|
-| 🟢🟡 **Budget/Mid ★** | **BME280 breakout board** | **250–400** | **3 environmental parameters for the price of a cable gland. I2C, 3 lines of code, zero maintenance.** |
-| 🔴 Premium | BME680 (adds gas resistance / VOC) | 800–1,200 | Adds air quality index. Interesting but not useful underwater. |
+| 🟢🟡 **Budget/Mid ★** | **GY-BMP280 breakout board** | **250–400** | **Air temp + barometric pressure over I2C1 (`0x76`). Note: BMP280 has no humidity sensor (`humidity` omitted in current STM32 JSON).** |
+| 🔴 Premium | BME280 / BME680 | 400–1,200 | Adds relative humidity / gas resistance if RH logging is added later. |
 
 **Why this is non-optional at altitude:**
 
@@ -254,7 +254,7 @@ Without ORP, you detect "water is degraded." With ORP, you classify **why**.
 - At Kullu (1,200m): ~880 hPa → DO saturation = **~87%** baseline
 - At Manali (2,050m): ~795 hPa → DO saturation = **~78%** baseline
 
-Without pressure compensation, your DO readings are **systematically over-reported by 13–22%** at deployment sites. BME280 fixes this for ₹300.
+Without pressure compensation, your DO readings are **systematically over-reported by 13–22%** at deployment sites. BMP280 fixes this for ₹300.
 
 **ML model bonus:** Pressure drop → incoming rain → runoff → turbidity/TDS spike. The model sees the *cause* arriving before it hits the water.  
 **Mounting:** Inside the hull (no waterproofing needed). Away from motor heat.
@@ -264,40 +264,37 @@ Without pressure compensation, your DO readings are **systematically over-report
 ## Complete Suite Architecture
 
 ```
-                    ┌─────────────────────────────────┐
-                    │         HULL (SEALED)            │
-                    │                                  │
-                    │  ┌─────────┐    ┌──────────┐    │
-                    │  │ STM32   │◄──►│ BME280   │    │
-                    │  │ F405    │I2C │(air temp, │    │
-                    │  │         │    │ humidity, │    │
-                    │  │ 6× ADC  │    │ pressure) │    │
-                    │  │ OneWire │    └──────────┘    │
-                    │  │ Digital │                     │
-                    │  └────┬────┘                     │
-                    │       │                          │
-                    └───────┼──────────────────────────┘
-                            │ Cable glands (sealed)
-                    ════════╪══════════════════════════
-                      WATER │ LINE
-                    ════════╪══════════════════════════
-                            │
-                    ┌───────┴───────────────────┐
-                    │      PROBE MAST           │
+                    ┌──────────────────────────────────────┐
+                    │            HULL (SEALED)             │
+                    │                                      │
+                    │  ┌───────────┐    ┌───────────────┐  │
+                    │  │ STM32     │◄──►│ BMP280 + BNO  │  │
+                    │  │ F722ZE    │I2C1│ (air temp,    │  │
+                    │  │           │    │  baro, IMU)   │  │
+                    │  │ PA3..PC3  │    └───────────────┘  │
+                    │  │ (2:1 div) │    ┌───────────────┐  │
+                    │  │ PE6 1-Wire│◄──►│ NEO-M8N GNSS  │  │
+                    │  └─────┬─────┘U4  └───────────────┘  │
+                    │        │                             │
+                    └────────┼─────────────────────────────┘
+                             │ Cable glands (sealed)
+                    ═════════╪═════════════════════════════
+                       WATER │ LINE
+                    ═════════╪═════════════════════════════
+                             │
+                    ┌────────┴───────────────────┐
+                    │      PROBE MAST            │
                     │   (rigid PVC/3D-printed)   │
                     │                            │
-                    │  ┌─ Conductivity (K=1)     │ ← fastest
-                    │  ├─ TDS                    │
-                    │  ├─ DS18B20 × 2 (primary   │
-                    │  │    + backup)             │
-                    │  ├─ Turbidity (w/ shroud)   │
-                    │  ├─ ORP (SEN0165) ✨ NEW    │
-                    │  ├─ pH (w/ PVC guard)       │ ← 30-60s
-                    │  └─ DO (w/ cage) ← DEEPEST  │ ← 30-90s
-                    │                            │
+                    │  ├─ TDS (PA5, SEN0244)     │ ← fast
+                    │  ├─ DS18B20 (PE6, temp_w1) │ ← temp comp
+                    │  ├─ ORP (PC3, SEN0165)     │ ← 20-sample trimmed mean
+                    │  ├─ pH (PA3, SEN0161 V1)   │ ← 3-pt buffer calibrated
+                    │  └─ DO (PA4, SEN0237-A)    │ ← DEEPEST (7.5% KCl)
+                    │    (PC0 Turb / PA6 EC / US reserved)
                     └────────────────────────────┘
 
-          IP68 UART ultrasonic ← mounted hull bottom, faces down
+          IP68 UART ultrasonic ← mounted hull bottom, faces down (reserved)
 ```
 
 ---
@@ -306,14 +303,13 @@ Without pressure compensation, your DO readings are **systematically over-report
 
 ```
 1.  Boat halts → wait 3–5 sec (bubble/wake clearance)
-2.  Read: BME280 (pressure, air temp, humidity)           ← NEW
-3.  Read: DS18B20 × 2 (water temp, cross-check)          ← UPDATED
-4.  Read: Conductivity, TDS, Turbidity (fast sensors)
-5.  Read: ORP                                             ← NEW (~20s)
-6.  Wait remaining time for pH to stabilize (~30–60s total dwell)
-7.  Read: pH
-8.  Read: DO last (slowest — maximum settling time by now)
-9.  Read: UART depth sensor
+2.  Read: BMP280 (barometric pressure, air temp) & BNO085 IMU
+3.  Read: DS18B20 on PE6 (water temp, temp_w1)
+4.  Read: TDS on PA5 (temp-compensated, K = 1.036)
+5.  Read: ORP on PC3 (480 cycles, 20-sample trimmed mean)
+6.  Read: pH on PA3 (5V rail via 2:1 divider; PH_SCALE = 4.942, PH_OFFSET = -2.713)
+7.  Read: DO on PA4 last (7.5% KCl, air-cal 764 mV @ 24°C, BMP280 pressure-comp)
+8.  Serialize active 19-field JSON telemetry packet over USART3
 10. Apply compensations:
     - Temp compensation → pH, DO, conductivity, TDS
     - Pressure compensation → DO                         ← NEW
@@ -336,7 +332,7 @@ Without pressure compensation, your DO readings are **systematically over-report
 | Conductivity | Generic EC probe | 600–1,000 |
 | ORP | Generic analog ORP module | 1,500–4,000 |
 | Depth | IP68 UART depth sensor | 250–450 |
-| Environmental | BME280 | 250–400 |
+| Environmental | BMP280 | 250–400 |
 | **TOTAL** | | **₹5,950–10,950** |
 
 > [!WARNING]
@@ -348,15 +344,15 @@ Without pressure compensation, your DO readings are **systematically over-report
 
 | Sensor | Option | Cost (₹) |
 | -------- | -------- | ---------- |
-| pH | DFRobot SEN0161 | 800–1,200 |
-| Turbidity | DFRobot SEN0189 | 700–950 |
-| TDS | Gravity TDS Kit | 300–450 |
-| Temperature × 2 | DS18B20 | 300–400 |
-| DO | DFRobot Gravity Analog DO | 3,500–4,200 |
-| Conductivity | Gravity Analog (K=1) | 1,200–1,800 |
+| pH | DFRobot SEN0161 V1 (robu.in) | 800–1,200 |
+| Turbidity | DFRobot SEN0189 *(reserved)* | 700–950 |
+| TDS | Gravity TDS Kit (SEN0244) | 300–450 |
+| Temperature | DS18B20 (`PE6`) | 150–400 |
+| DO | DFRobot SEN0237-A (7.5% KCl) | 3,500–4,200 |
+| Conductivity | Gravity Analog (K=1) *(reserved)* | 1,200–1,800 |
 | ORP | DFRobot SEN0165 | 9,400–10,800 |
-| Depth | IP68 UART depth sensor | 250–450 |
-| Environmental | BME280 | 250–400 |
+| Depth | IP68 UART depth sensor *(reserved)* | 250–450 |
+| Environmental | BMP280 (`0x76`) | 250–400 |
 | **TOTAL** | | **₹16,700–20,650** |
 
 > [!TIP]
@@ -389,7 +385,7 @@ Without pressure compensation, your DO readings are **systematically over-report
 | CPCB Parameter | Covered? | How |
 | ---------------- | ---------- | ----- |
 | pH | ✅ | DFRobot SEN0161 |
-| Dissolved Oxygen (DO) | ✅ | DFRobot Gravity DO (pressure-compensated via BME280) |
+| Dissolved Oxygen (DO) | ✅ | DFRobot Gravity DO (pressure-compensated via BMP280) |
 | Temperature | ✅ | DS18B20 × 2 |
 | Electrical Conductivity (EC) | ✅ | Gravity K=1 |
 | Turbidity | ✅ | DFRobot SEN0189 |
@@ -429,7 +425,7 @@ Without pressure compensation, your DO readings are **systematically over-report
 | Conductivity (K=1) | Monthly | Electrode cleaning + recalibration |
 | **ORP (SEN0165)** | **Monthly** | **Platinum tip cleaning** |
 | Depth (IP68 UART) | None | Fit-and-forget |
-| **BME280** | **None** | **Fit-and-forget (hull-internal)** |
+| **BMP280** | **None** | **Fit-and-forget (hull-internal)** |
 | **Backup DS18B20** | **None** | **Fit-and-forget** |
 
 > [!CAUTION]

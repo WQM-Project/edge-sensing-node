@@ -20,7 +20,7 @@
 | 6 | 1 | DFRobot DFR0300 | Gravity: Analog Conductivity Sensor (K=1) | Analog | 1,200–1,800 | 1,200–1,800 | Robu / Robocraze |
 | 7 | 1 | DFRobot SEN0165 | Gravity: Analog ORP Sensor Meter (platinum electrode, BNC) | Analog | 9,400–10,800 | 9,400–10,800 | Robu / Element14 |
 | 8 | 1 | IP68 Underwater Ultrasonic Obstacle Avoidance Sensor | Waterproof Ultrasonic Distance Sensor (0–600 cm) | UART | 250–450 | 250–450 | Robu / Amazon IN |
-| 9 | 1 | GY-BME280 | BME280 Barometric Pressure + Humidity + Temperature Breakout | I2C | 250–400 | 250–400 | Robu / Robocraze |
+| 9 | 1 | GY-BMP280 | BMP280 Barometric Pressure + Air Temperature Breakout (no RH on current build) | I2C | 250–400 | 250–400 | Robu / Robocraze |
 
 | | | | | | **Sensor Total** | **₹16,700–20,600** | |
 
@@ -32,7 +32,7 @@
 | --- | ----- | ------------- | ---------------- | ------- |
 | C1 | 2 | pH Buffer Solution — pH 4.0 (250 mL) | 150–250 | For two-point calibration |
 | C2 | 2 | pH Buffer Solution — pH 7.0 (250 mL) | 150–250 | For two-point calibration |
-| C3 | 1 | DO Membrane Cap + Electrolyte Fill (0.5 mol/L NaOH) — spare | 400–600 | First replacement set |
+| C3 | 1 | DO Membrane Cap + Electrolyte Fill (7.5% KCl — 2 g KCl in 26 g water) — spare | 400–600 | First replacement set |
 | C4 | 1 | ORP Calibration / Cleaning Solution | 200–400 | For periodic platinum tip maintenance |
 | C5 | 1 | Conductivity Calibration Standard (1413 μS/cm, 250 mL) | 200–350 | For K=1 probe calibration |
 
@@ -49,7 +49,7 @@
 | P3 | 1 | DO membrane guard cage | PETG | 10–15 | Wire-mesh style cage around galvanic membrane tip. Non-negotiable protection. |
 | P4 | 1 | pH bulb guard tube | PETG / PVC | 10–15 | Perforated tube recessing the glass bulb from lateral impact. |
 | P5 | 1 | Cable gland mounting plate | PETG | 15–25 | Sealed hull-entry plate with holes for 6–8 cable glands. |
-| P6 | 1 | BME280 + electronics mounting bracket | PLA | 5–10 | Internal hull bracket. No water contact — PLA acceptable. |
+| P6 | 1 | BMP280 + electronics mounting bracket | PLA | 5–10 | Internal hull bracket. No water contact — PLA acceptable. |
 | P7 | 1 | IP68 ultrasonic hull-bottom mount | PETG | 10–15 | Angled bracket, faces sensor downward, clear of prop wash. |
 
 | | | | **Est. Total Print Weight** | **145–225 g** | |
@@ -96,7 +96,7 @@
 | Conductivity board | ~5 mA | 100% | 5 mA |
 | ORP signal board | ~5 mA | 100% | 5 mA |
 | IP68 ultrasonic (UART) | ~30 mA | ~2% | 0.6 mA |
-| BME280 | ~0.3 mA | ~1% | ~0 mA |
+| BMP280 | ~0.3 mA | ~1% | ~0 mA |
 | **Total sensor draw** | | | **~28.25 mA** |
 
 > [!TIP]
@@ -108,7 +108,7 @@
 
 ```
 HULL (top)
-├── BME280 ..................... internal, away from motor heat
+├── BMP280 ..................... internal, away from motor heat
 ├── IP68 ultrasonic ........... hull bottom, facing down
 │
 PROBE MAST (submerged, rigid PVC/3D-printed)
@@ -151,7 +151,7 @@ PROBE MAST (submerged, rigid PVC/3D-printed)
 - [ ] Conductivity sensor kit (DFR0300) + 1413 μS/cm calibration standard
 - [ ] ORP sensor kit (SEN0165) + cleaning solution
 - [ ] IP68 underwater ultrasonic obstacle avoidance sensor (6 m, UART)
-- [ ] BME280 breakout board
+- [ ] BMP280 breakout board (barometric pressure + air temperature)
 - [ ] Spare DO membrane cap + electrolyte
 - [ ] PETG filament — 1 kg spool (for probe mast, shrouds, guard cages, mounts)
 - [ ] 3D print: probe mast, turbidity shroud, DO cage, pH guard, cable gland plate, mounts

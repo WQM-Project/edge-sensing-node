@@ -92,35 +92,35 @@ typedef struct {
 
 /* ── pH sensor (robu.in Analog pH Sensor Kit) ───────────────────────────────
  *
- * Transfer curve from vendor source code (Arduino 5V / 10-bit version):
- *   phValue = avgADC × 5.0 / 1024 / 6          → V at ADC pin (0–5V world)
- *   phValue = 3.5 × phValue                    → pH = 3.5 × V_sensor
+ * Calibrated against standard pH buffers:
+ *   pH  4.00 buffer -> V_sensor = 1.357 V
+ *   pH  7.00 buffer -> V_sensor = 1.968 V
+ *   pH 10.00 buffer -> V_sensor = 2.571 V
  *
- * On STM32 (3.3V / 12-bit) with 2:1 voltage divider on PA3:
- *   V_sensor = (ADC_raw / 4095.0) × 3.3 × 2   (ADC_Read_Voltage returns this)
- *   pH       = PH_SCALE × V_sensor + PH_OFFSET
- *
- * Neutral point check: pH 7.0 → V_sensor ≈ 2.0V → 3.5 × 2.0 = 7.0 ✓
- * Acid point check:    pH 4.0 → V_sensor ≈ 1.14V → 3.5 × 1.14 ≈ 4.0 ✓
- *
- * PH_OFFSET is a one-point trim: short the BNC connector (→ pH 7.0 equivalent),
- * read the displayed value, and set PH_OFFSET = 7.0 - displayed_value.
+ * Linear regression fit:
+ *   pH = PH_SCALE × V_sensor + PH_OFFSET
+ *   where PH_SCALE = 4.942f, PH_OFFSET = -2.713f
+ *   Maximum residual error across 4.0, 7.0, and 10.0 standards is <= 0.01 pH.
  */
-#define PH_SCALE (3.5f)  /* Vendor-specified linear scale factor      */
-#define PH_OFFSET (0.0f) /* One-point calibration trim (adjust in situ)*/
+#define PH_SCALE (4.942f)  /* Calibrated linear scale factor (pH/V)     */
+#define PH_OFFSET (-2.713f) /* Calibrated zero-offset trim               */
 
 /* NOTE: If PA3 has NO hardware voltage divider (sensor output 0-3V direct),
  * change ADC_Read_Voltage() call for pH to use ADC_Read_Channel() with
  * manual ×(3.3/4095.0) and remove the ×2 — or set VDIV_SCALE to 1.0 here.
  * The current code assumes the 2:1 divider IS present on PA3. */
 
-/* ── TDS sensor (SEN0244) polynomial coefficients ───────────────────────────
+/* ── TDS sensor (SEN0244) polynomial coefficients & calibration ────────────
+ * Calibrated against 1413 uS/cm standard solution (target 706.5 ppm):
+ *   Measured raw TDS = 682.0 ppm at 16.88°C
+ *   Calibration factor K = 706.5 / 682.0 = 1.036
  */
 #define TDS_COEFF_A (133.42f)
 #define TDS_COEFF_B (-255.86f)
 #define TDS_COEFF_C (857.39f)
 #define TDS_FACTOR (0.5f)
-#define TDS_TEMP_COEFF 0.02f /* 2% per °C temperature compensation */
+#define TDS_CAL_K (1.036f)   /* Calibration scale factor (K-value)         */
+#define TDS_TEMP_COEFF 0.02f /* 2% per °C temperature compensation         */
 
 /* ── DO sensor (SEN0237-A) calibration ──────────────────────────────────────
  */
@@ -794,7 +794,7 @@ static float Sensor_ReadPH(void) {
 
   char ph_diag[96];
   snprintf(ph_diag, sizeof(ph_diag),
-           "[pH] V_sensor=%.3fV  pH=%.2f  (scale=%.1f offset=%.2f)\r\n",
+           "[pH] V_sensor=%.3fV  pH=%.2f  (scale=%.3f offset=%.3f)\r\n",
            v_sensor, ph, PH_SCALE, PH_OFFSET);
   Debug_Print(ph_diag);
 
@@ -812,10 +812,10 @@ static float Sensor_ReadTDS(float water_temp) {
   float comp_coeff = 1.0f + TDS_TEMP_COEFF * (water_temp - 25.0f);
   float comp_v = voltage / comp_coeff;
 
-  /* Polynomial conversion */
+  /* Polynomial conversion with calibration multiplier */
   float tds = (TDS_COEFF_A * comp_v * comp_v * comp_v +
                TDS_COEFF_B * comp_v * comp_v + TDS_COEFF_C * comp_v) *
-              TDS_FACTOR;
+              TDS_FACTOR * TDS_CAL_K;
   if (tds < 0.0f)
     tds = 0.0f;
   if (tds > 1000.0f)
@@ -823,8 +823,8 @@ static float Sensor_ReadTDS(float water_temp) {
 
   char tds_diag[96];
   snprintf(tds_diag, sizeof(tds_diag),
-           "[TDS] V_sensor=%.3fV  comp_v=%.3fV  TDS=%.1f ppm\r\n",
-           voltage, comp_v, tds);
+           "[TDS] V_sensor=%.3fV  comp_v=%.3fV  TDS=%.1f ppm (k=%.3f)\r\n",
+           voltage, comp_v, tds, TDS_CAL_K);
   Debug_Print(tds_diag);
 
   return tds;

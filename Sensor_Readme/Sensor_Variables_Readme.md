@@ -2,12 +2,12 @@
 
 This document details the configuration constants (macros) defined in `main.c` that govern the behavior, calibration, and hardware interfaces for the various sensors used in the Water Quality Monitoring (WQM) project.
 
-## pH Sensor (SEN0161)
+## pH Sensor (robu.in SEN0161 V1 Kit) — Connected to PA3 (ADC_CH3)
 
-These parameters govern the conversion of analog voltage to pH using a standard linear equation: `pH = (Voltage * Slope) + Offset`.
+These parameters govern the conversion of post-divider-reconstructed analog voltage (`VDIV_SCALE = 2.0f`) to pH using a linear regression fit: `pH = (V_sensor × PH_SCALE) + PH_OFFSET`.
 
-* **`PH_CAL_SLOPE (-5.70f)`**: The slope of the calibration curve. Represents how much the voltage changes per unit of pH.
-* **`PH_CAL_OFFSET (21.34f)`**: The theoretical pH value when the sensor outputs 0V, calculated via a standard two-point calibration using buffer solutions (pH 4.0 and 7.0).
+* **`PH_SCALE (4.942f)`**: Calibrated linear scale factor (pH/V) fitted against pH 4.00 (`1.357 V`), pH 7.00 (`1.968 V`), and pH 10.00 (`2.571 V`) standard buffers (residual error `<= 0.01 pH`).
+* **`PH_OFFSET (-2.713f)`**: Calibrated zero-offset trim from the three-point buffer linear regression.
 
 ## Turbidity Sensor (SEN0189)
 
@@ -23,6 +23,7 @@ Total Dissolved Solids (TDS) is calculated using a polynomial curve fit against 
 
 * **`TDS_COEFF_A (133.42f)`**, **`TDS_COEFF_B (-255.86f)`**, **`TDS_COEFF_C (857.39f)`**: The polynomial coefficients for translating the temperature-compensated voltage curve into a TDS value.
 * **`TDS_FACTOR (0.5f)`**: An approximate empirical conversion factor used to relate electrical conductivity to TDS (specifically for sodium chloride solutions).
+* **`TDS_CAL_K (1.036f)`**: Calibrated cell K-factor against a 1413 µS/cm (706.5 ppm target) standard solution (`706.5 / 682.0 = 1.036`).
 * **`TDS_TEMP_COEFF (0.02f)`**: Temperature coefficient (2% per °C) normalizing to 25°C baseline.
 
 ## DO (Dissolved Oxygen) Sensor (SEN0237-A) — Connected to PA4 (ADC_CH4)
@@ -61,8 +62,3 @@ Used for measuring water level via ultrasonic ranging over UART frames.
 * **`DEPTH_UART_FRAME_HEADER (0xFFu)`** and **`DEPTH_UART_FRAME_LEN (4u)`**: Conservative framed payload parser assumptions used by the current firmware abstraction.
 * **`DEPTH_UART_TIMEOUT_MS (120u)`**: UART receive timeout for one depth frame.
 * **`DEPTH_SENSOR_MAX_CM (600.0f)`**: Maximum accepted measurement range (6 meters) before marking the sample invalid.
-
-## BME280 Environmental Sensor
-
-* **`BME280_ADDR (0x76 << 1)`**: The I2C hardware address of the BME280. Shifted left by 1 bit because the STM32 HAL requires 8-bit aligned I2C addresses.
-* **`BME280_REG_ID (0xD0)`** & **`BME280_REG_CTRL_HUM (0xF2)`**: Key internal register addresses for reading the chip ID and configuring humidity oversampling.

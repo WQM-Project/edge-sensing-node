@@ -137,8 +137,9 @@ Key calibration values to adjust for your hardware:
 
 | Constant | Default | What to calibrate |
 |---|---|---|
-| `PH_CAL_SLOPE` / `PH_CAL_OFFSET` | 3.50 / 0.00 | Slope and offset for 0–5V analog signal with 2:1 divider |
-| `TURB_COEFF_A/B/C` | -1120.4 / 5742.3 / -4352.9 | Polynomial curve fit for your turbidity sensor unit |
+| `PH_SCALE` / `PH_OFFSET` | `4.942f` / `-2.713f` | Linear regression (`pH = PH_SCALE × V_sensor + PH_OFFSET`) across pH 4.00, 7.00, 10.00 buffers (2:1 divider on `PA3`) |
+| `TDS_CAL_K` | `1.036f` | K-value calibration factor against 1413 µS/cm (706.5 ppm) standard on `PA5` |
+| `TURB_COEFF_A/B/C` | -1120.4 / 5742.3 / -4352.9 | Polynomial curve fit for your turbidity sensor unit (currently omitted from active JSON build) |
 | `DO_CAL1_V` / `DO_CAL1_T` | 764 mV / 24°C | Single-point air saturation voltage (post 2:1 divider, ~1.54V board output) |
 | `DO_TEMP_COMP_MV` | 17.5 mV/°C | Temperature coefficient post-divider (~35 mV/°C at sensor output) |
 | `ORP_OFFSET` | 0.0 mV | Offset from ORP standard solution (reconstructed 2.0V midpoint formula) |
@@ -165,7 +166,7 @@ Key calibration values to adjust for your hardware:
 |---|---|
 | [WQM-Project/WQM](https://github.com/WQM-Project/WQM) | Top-level project documentation, BOM, and planning |
 | [WQM-Project/water-quality-ml](https://github.com/WQM-Project/water-quality-ml) | ML pipeline — LSTM prediction and trend analysis |
-| Gateway repo | ESP8266 + SIM7600E gateway (coming soon) |
+| [WQM-Project/gateway](https://github.com/WQM-Project/gateway) | ESP8266 + SIM7600E gateway & cellular uploader |
 
 ---
 

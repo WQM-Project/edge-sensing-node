@@ -335,7 +335,7 @@ The resistor bridges **3.3V → PE6 (data line)**. It does not go in series with
 > **Confirmed model: DFRobot Gravity SEN0161 V1 (the version sold on Robu.in).** This is the **V1** (not V2):
 > - Supply voltage: **strictly 5V only** — no onboard regulator. Do not power from 3.3V.
 > - Analog output: **0–5V** (full rail output) — the 2:1 voltage divider is **mandatory** to protect the STM32 ADC.
-> - Calibration: **manual** — via potentiometer on board (hardware coarse-trim) + `PH_CAL_SLOPE` / `PH_CAL_OFFSET` in firmware (software fine-trim). V1 does **not** support auto two-point calibration libraries.
+> - Calibration: **three-point software regression** in firmware (`PH_SCALE = 4.942f`, `PH_OFFSET = -2.713f`, fitted across pH 4.00 / 7.00 / 10.00 buffers) + optional potentiometer coarse-trim on board. V1 does **not** support auto two-point calibration libraries.
 
 ### Wiring
 
@@ -372,14 +372,13 @@ The firmware's [`VDIV_SCALE = 2.0`](file:///c:/Users/karti/OneDrive/Desktop/PROJ
 
 ### Calibration
 
-If readings are off, adjust [`PH_CAL_SLOPE`](file:///c:/Users/karti/OneDrive/Desktop/PROJECTS/edge-sensing-node-temp/Core/Src/main.c#L112) and [`PH_CAL_OFFSET`](file:///c:/Users/karti/OneDrive/Desktop/PROJECTS/edge-sensing-node-temp/Core/Src/main.c#L113) in main.c:
+If readings are off, adjust `PH_SCALE` (`4.942f`) and `PH_OFFSET` (`-2.713f`) in `Core/Src/main.c` (`pH = PH_SCALE × V_sensor + PH_OFFSET`):
 
-1. Record voltage at pH 7.0: `V7`
-2. Record voltage at pH 4.0: `V4`
-3. Calculate:
+1. Record post-divider-reconstructed voltages (`V_sensor`) at pH 4.00 (`1.357 V`), pH 7.00 (`1.968 V`), and pH 10.00 (`2.571 V`).
+2. Fit a linear regression (or two-point slope/offset):
    ```
-   PH_CAL_SLOPE  = (7.0 - 4.0) / (V7 - V4)
-   PH_CAL_OFFSET = 7.0 - (PH_CAL_SLOPE × V7)
+   PH_SCALE  = (pH2 - pH1) / (V2 - V1)
+   PH_OFFSET = pH1 - (PH_SCALE × V1)
    ```
 
 ### ✅ Pass Criteria

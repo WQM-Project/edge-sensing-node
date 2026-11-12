@@ -215,9 +215,11 @@
 
 ---
 
-## 7. GPS Module (new addition for mobile platform)
+## 7. GPS Module (optional on STM32 — SIM7600 GNSS on onboard ESP32 supplies primary GPS)
 
-**Recommended: NEO-6M or NEO-M8N GPS Module**
+> **Architecture note:** Because telemetry goes directly over UART RX–TX from the STM32 to the onboard ESP32 + SIM7600 4G LTE + GNSS module, the SIM7600's built-in GNSS provides primary GPS coordinates (`lat`, `lon`, `gps_fix`). A standalone `UART4` NEO-6M/NEO-M8N on STM32 is optional.
+
+**Optional standalone STM32 module: NEO-6M or NEO-M8N GPS**
 
 | Spec | Value |
 | --- | --- |

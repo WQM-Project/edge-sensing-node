@@ -28,7 +28,7 @@
 
 **Active ADC channels used:** 4 active (`PA3` pH, `PA4` DO, `PA5` TDS, `PC3` ORP — all via 2:1 10kΩ/10kΩ dividers; `PC0` turbidity & `PA6` conductivity reserved)  
 **Digital pins used:** `PE6` (OneWire bus for DS18B20 with 4.7 kΩ pull-up)  
-**UART used:** 1 (`USART3` RX reserved for depth sensor; `UART4` `PC10/PC11` for NEO-M8N GPS)  
+**UART used:** 2–3 (`USART3` ST-LINK debug + JSON; dedicated 3.3V UART RX–TX to onboard ESP32 + SIM7600 4G/GNSS gateway; optional `UART4` `PC10/PC11` for NEO-M8N)  
 **I2C1 devices:** `BMP280` (`0x76` — air temp + barometric pressure) + `BNO085` IMU (`0x4A`)  
 **STM32F722ZE capacity:** 16+ ADC channels, multiple I2C/UART — ample headroom.
 
@@ -273,9 +273,9 @@ Without pressure compensation, your DO readings are **systematically over-report
                     │  │           │    │  baro, IMU)   │  │
                     │  │ PA3..PC3  │    └───────────────┘  │
                     │  │ (2:1 div) │    ┌───────────────┐  │
-                    │  │ PE6 1-Wire│◄──►│ NEO-M8N GNSS  │  │
-                    │  └─────┬─────┘U4  └───────────────┘  │
-                    │        │                             │
+                    │  │ PE6 1-Wire│◄──►│ ESP32+SIM7600 │  │
+                    │  └─────┬─────┘UART│ (4G LTE+GNSS) │  │
+                    │        │          └───────────────┘  │
                     └────────┼─────────────────────────────┘
                              │ Cable glands (sealed)
                     ═════════╪═════════════════════════════

@@ -75,12 +75,11 @@
 
 ## ❌ Not Yet Done
 
-### Communication — LoRa TX
-- [ ] SX1278 LoRa module driver (SPI-based)
-- [ ] LoRa packet framing and transmission
-- [ ] Switch USART3 output from debug to LoRa module
-- [ ] TX power, frequency, and spreading factor configuration
-- [ ] Acknowledgement / retry logic
+### Communication — Onboard ESP32 UART RX–TX Link
+- [x] `WQM_BuildJSON` active 19-field newline-delimited JSON serializer (`STM32_INTEGRATION.md` contract)
+- [ ] Dedicated 3.3V UART TX/RX port (`115200 8N1` to onboard ESP32 `GPIO25`/`GPIO26`) separate from USB debug UART
+- [ ] `ACK` / `NAK` reply handling and retry logic (`send_reading` per `STM32_INTEGRATION.md`)
+- [ ] Onboard end-to-end soak test with ESP32 + SIM7600 4G LTE + GNSS gateway
 
 ### Power Management
 - [ ] Low-power sleep between samples (STOP/STANDBY modes)
@@ -123,7 +122,7 @@
 | Data Collection Loop | ✅ Done |
 | **JSON Data Packet** | **✅ Done** |
 | Debug UART Output | ✅ Done |
-| LoRa Communication | ❌ Not started |
+| Onboard ESP32 UART Link | 🟡 In Progress (`WQM_BuildJSON` ready; dedicated UART + ACK/NAK pending) |
 | Power Management | ❌ Not started |
 | Error Handling / Watchdog | ❌ Not started |
 | Runtime Calibration | ❌ Not started |

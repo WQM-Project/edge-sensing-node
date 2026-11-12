@@ -1200,7 +1200,7 @@ int main(void)
 
     /* ═══════════════════════════════════════════════════════════════════════
      */
-    /*  BUILD JSON PACKET & TRANSMIT VIA USART3 (debug; LoRa later)         */
+    /*  BUILD JSON PACKET & TRANSMIT VIA USART3 (USB debug / ESP32 UART)     */
     /* ═══════════════════════════════════════════════════════════════════════
      */
 

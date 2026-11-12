@@ -4,20 +4,20 @@
 
 This repo contains the firmware for the **edge sensing node**: a NUCLEO-F722ZE board wired to a multi-parameter water quality sensor suite. Its single job is to:
 
-1. **Acquire** readings from 10+ sensors (pH, turbidity, TDS, dissolved oxygen, conductivity, ORP, temperature, depth, atmospheric conditions)
+1. **Acquire** readings from active onboard sensors (pH, TDS, dissolved oxygen, ORP, water temperature, barometric pressure, air temperature, and 9-DOF IMU orientation)
 2. **Serialize** them into a compact JSON packet
-3. **Transmit** via UART (→ LoRa SX1278 in deployment) to the [gateway](https://github.com/WQM-Project) for cloud upload
+3. **Transmit** directly over 3.3V UART RX–TX to the onboard ESP32 + SIM7600 [gateway](https://github.com/WQM-Project/gateway), which attaches SIM7600 GNSS coordinates + UTC time and pushes data over 4G LTE to the server (no LoRa radio or separate shore gateway; see [STM32_INTEGRATION.md](STM32_INTEGRATION.md))
 
 ---
 
 ## System Position
 
 ```
-┌─────────────────────┐       LoRa 868 MHz        ┌───────────────┐       4G LTE      ┌──────────────┐
-│  edge-sensing-node  │────────────────────────▶ │    gateway     │ ─────────────────▶│  Firebase /  │
-│  (this repo)        │   JSON over UART→SX1278   │  (ESP8266 +   │   HTTPS + JSON    │  Cloud + ML  │
-│  STM32F722ZE        │                           │   SIM7600E)   │                   │  Dashboard   │
-└─────────────────────┘                           └───────────────┘                   └──────────────┘
+┌──────────────────────┐    3.3V UART RX–TX    ┌──────────────────────┐      4G LTE       ┌──────────────────┐
+│  edge-sensing-node   │──────────────────────▶│  onboard gateway     │─────────────────▶│  Supabase Cloud  │
+│  (this repo)         │   JSON @ 115200 8N1   │  (ESP32 + SIM7600    │   HTTPS + JSON   │  + ML Pipeline   │
+│  STM32F722ZE         │◀──────────────────────│   4G LTE + GNSS HAT) │                  │  + Dashboards    │
+└──────────────────────┘       ACK / NAK       └──────────────────────┘                  └──────────────────┘
 ```
 
 ---
@@ -35,30 +35,35 @@ This repo contains the firmware for the **edge sensing node**: a NUCLEO-F722ZE b
 | Depth | IP68 Underwater Ultrasonic Obstacle Avoidance Sensor (6 m) | UART | USART3 RX (PD9) | Water Level | cm |
 | Atmospheric | BMP280 | I2C1 | PB8/PB9 | Air Temp, Pressure | °C, hPa |
 | Navigation / IMU | BNO085 | I2C1 | PB8/PB9 | Orientation (heading, pitch, roll) | ° |
-| Location | NEO-M8N / NEO-6M | UART | UART4 (PC10/PC11) | GPS Navigation & Coordinates | — |
+| Location | Onboard SIM7600 GNSS *(via ESP32)* / Optional NEO-M8N | UART | ESP32+SIM7600 *(optional `UART4` `PC10/PC11`)* | GPS Navigation & Coordinates | — |
 
 ---
 
 ## JSON Telemetry Packet
 
-Every `SAMPLE_INTERVAL_MS` (default **5 s**), the node serializes all sensor data and transmits it over USART3:
+Every `SAMPLE_INTERVAL_MS` (default **5 s**), the node serializes the active 19-field telemetry line (see [STM32_INTEGRATION.md](STM32_INTEGRATION.md)) and transmits it over UART to the onboard ESP32 gateway:
 
 ```json
 {
   "id": "WQM-001",
-  "ts": 123456789,
+  "ts": 166519,
   "pH": 7.12,
-  "turb_ntu": 42.5,
   "tds_ppm": 310.0,
-  "do_mgl": 6.85,
-  "ec_uscm": 680.2,
-  "orp_mv": 215.0,
-  "temp_w1": 23.50,
-  "temp_w2": 23.48,
-  "depth_cm": 35.2,
+  "do_mgl": 8.84,
+  "orp_mv": 91.6,
+  "temp_w1": 23.62,
   "temp_air": 28.60,
-  "humidity": 65.3,
-  "pressure_hpa": 1013.25
+  "pressure_hpa": 1013.25,
+  "lat": 0.000000,
+  "lon": 0.000000,
+  "alt_m": 0.0,
+  "sog_knots": 0.0,
+  "cog_deg": 0.0,
+  "gps_fix": 0,
+  "sats": 0,
+  "heading": 0.0,
+  "pitch": 0.0,
+  "roll": 0.0
 }
 ```
 
@@ -72,7 +77,7 @@ Every `SAMPLE_INTERVAL_MS` (default **5 s**), the node serializes all sensor dat
 | `orp_mv` | Oxidation-Reduction Potential in mV (2.0V midpoint formula + 20-sample trimmed mean) |
 | `temp_w1` | Water temperature in °C (DS18B20 on `PE6`) |
 | `temp_air` / `pressure_hpa` | Atmospheric air temperature and barometric pressure (`BMP280` on `PB8/PB9`, no RH sensor) |
-| `lat` / `lon` / `alt_m` / `sog_knots` / `cog_deg` / `gps_fix` / `sats` | NEO-M8N GNSS navigation telemetry (`UART4`) |
+| `lat` / `lon` / `alt_m` / `sog_knots` / `cog_deg` / `gps_fix` / `sats` | Optional STM32 GNSS pass-through (`UART4`); the onboard ESP32 + SIM7600 module provides primary GPS coordinates & strips unfixed `(0, 0)` placeholders |
 | `heading` / `pitch` / `roll` | BNO085 9-DOF IMU Euler orientation (`I2C1`) |
 
 *(Note: Optional drivers for `turb_ntu` / `ec_uscm` / `temp_w2` / `depth_cm` exist in firmware, and `humidity` is omitted with BMP280.)*
@@ -152,8 +157,8 @@ Key calibration values to adjust for your hardware:
 |---|---|
 | **ADC1** | Analog sensors (PA3, PA4, PA5, PC3, PC0), 16× oversampling, 480 cycles sampling time |
 | **I2C1** | BMP280 barometer (`0x76`) and BNO085 9-DOF IMU (`0x4A`) |
-| **USART3** | JSON telemetry TX + depth sensor UART RX |
-| **UART4** | NEO-M8N GPS UART RX (`PC11`) |
+| **USART3** | JSON telemetry TX + USB debug ST-LINK VCP (dedicated 3.3V UART RX–TX to onboard ESP32 per [STM32_INTEGRATION.md](STM32_INTEGRATION.md)) |
+| **UART4** | Optional NEO-M8N GPS UART RX (`PC11`; primary GNSS comes from SIM7600 on the onboard ESP32 gateway) |
 | **TIM6** | Microsecond-precision delay for OneWire timing |
 | **GPIO PE6** | DS18B20 OneWire data bus (external 4.7kΩ pull-up) |
 | **GPIO PB0** | LD1 heartbeat LED |
@@ -166,7 +171,7 @@ Key calibration values to adjust for your hardware:
 |---|---|
 | [WQM-Project/WQM](https://github.com/WQM-Project/WQM) | Top-level project documentation, BOM, and planning |
 | [WQM-Project/water-quality-ml](https://github.com/WQM-Project/water-quality-ml) | ML pipeline — LSTM prediction and trend analysis |
-| [WQM-Project/gateway](https://github.com/WQM-Project/gateway) | ESP8266 + SIM7600E gateway & cellular uploader |
+| [WQM-Project/gateway](https://github.com/WQM-Project/gateway) | Onboard ESP32 + SIM7600 4G LTE & GNSS gateway (UART RX–TX from STM32) |
 
 ---
 

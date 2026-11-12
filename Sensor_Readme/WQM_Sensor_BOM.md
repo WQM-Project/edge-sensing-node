@@ -79,7 +79,7 @@
 | **PC0** | ADC1 Channel 10 | Turbidity (SEN0189) | 0–4.5V output via 2:1 divider |
 | **PE6** | OneWire Bus | DS18B20 (Water Temp) | External 4.7kΩ pull-up to 3.3V |
 | **PB8 / PB9** | I2C1 | BMP280 Barometer (`0x76`) + BNO085 IMU (`0x4A`) | Shared I2C bus with pull-ups |
-| **PC10 / PC11**| UART4 | NEO-M8N GPS | 9600 baud NMEA stream |
+| **PC10 / PC11**| UART4 | Optional NEO-M8N GPS | 9600 baud NMEA stream (optional; onboard SIM7600 supplies primary GPS via ESP32) |
 | **PD9** | USART3 RX | Depth sensor UART | IP68 ultrasonic distance |
 
 ---

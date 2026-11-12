@@ -679,7 +679,9 @@ Distance = `(HIGH << 8) | LOW` in mm, converted to cm in firmware.
 
 ---
 
-## 12. GPS Module (NEO-6M / BN-220 — UART4)
+## 12. GPS Module (Optional NEO-6M / BN-220 — UART4)
+
+> **Note:** In the active onboard setup, the ESP32's SIM7600 4G + GNSS module supplies GPS coordinates automatically. Use this test only if attaching a standalone NMEA GPS to STM32 `UART4`.
 
 ### Wiring
 
